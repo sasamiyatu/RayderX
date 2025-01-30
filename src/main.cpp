@@ -8,8 +8,9 @@
 #include "Volk/volk.h"
 
 #include <vector>
-
 #include <stdio.h>
+
+#include "scene.h"
 
 #define VK_CHECK(x)                                         \
 	do { 					                                \
@@ -73,6 +74,11 @@ static VkBool32 debug_callback(
 {
 	if (pCallbackData->pMessage)
 		printf("Validation layer: %s\n", pCallbackData->pMessage);
+
+	if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+	{
+		assert(false);
+	}
 	return VK_FALSE;
 }
 
@@ -252,6 +258,21 @@ VkCommandPool crate_command_pool(VkDevice device, uint32_t queue_family)
 
 int main(int argc, char** argv)
 {
+	if (argc != 2)
+	{
+		printf("Usage: %s <scene file>\n", argv[0]);
+		return 1;
+	}
+
+	std::vector<Mesh> meshes;
+	std::vector<Vertex> vertices;
+	std::vector<uint32_t> indices;
+	if (!load_scene(argv[1], meshes, vertices, indices))
+	{
+		printf("Failed to load scene!\n");
+		return 1;
+	}
+
     SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "1");
 
 	SDL_Window* window = SDL_CreateWindow("RayderX", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, SDL_WINDOW_SHOWN | SDL_WINDOW_VULKAN);

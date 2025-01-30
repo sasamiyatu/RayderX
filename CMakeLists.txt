@@ -19,3 +19,11 @@ target_link_libraries(rayderx
   PRIVATE
     SDL2::SDL2 
     Vulkan::volk)
+
+target_include_directories(rayderx PRIVATE external/cgltf extern/glm)
+
+set_target_properties(
+    rayderx
+    PROPERTIES
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
