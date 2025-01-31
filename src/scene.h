@@ -19,4 +19,10 @@ struct Mesh
 	uint32_t index_count;
 };
 
-bool load_scene(const char* path, std::vector<Mesh>& meshes, std::vector<Vertex>& vertices, std::vector<uint32_t>& indices);
+struct MeshDraw
+{
+	glm::mat4 transform;
+	uint32_t mesh_index;
+};
+
+bool load_scene(const char* path, std::vector<Mesh>& meshes, std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, std::vector<MeshDraw>& mesh_draws);

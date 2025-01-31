@@ -4,11 +4,12 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
 
-bool load_scene(const char* path, std::vector<Mesh>& meshes, std::vector<Vertex>& vertices, std::vector<uint32_t>& indices)
+bool load_scene(const char* path, std::vector<Mesh>& meshes, std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, std::vector<MeshDraw>& mesh_draws)
 {
 	meshes.clear();
 	indices.clear();
 	vertices.clear();
+	mesh_draws.clear();
 
 	cgltf_options options = {};
 	cgltf_data* data = nullptr;
@@ -32,9 +33,9 @@ bool load_scene(const char* path, std::vector<Mesh>& meshes, std::vector<Vertex>
 		for (uint32_t j = 0; j < mesh.primitives_count; ++j)
 		{
 			const cgltf_primitive& prim = mesh.primitives[j];
-			uint32_t first_vertex = vertices.size();
+			uint32_t first_vertex = (uint32_t)vertices.size();
 			uint32_t vertex_count = prim.attributes[0].data->count;
-			uint32_t first_index = indices.size();
+			uint32_t first_index = (uint32_t)indices.size();
 			uint32_t index_count = prim.indices->count;	
 
 			Mesh m{
@@ -90,6 +91,22 @@ bool load_scene(const char* path, std::vector<Mesh>& meshes, std::vector<Vertex>
 				}
 			}
 			vertices.insert(vertices.end(), verts.begin(), verts.end());
+		}
+	}
+
+	for (size_t i = 0; i < data->nodes_count; ++i)
+	{
+		const cgltf_node& node = data->nodes[i];
+		if (node.mesh)
+		{
+			glm::mat4 transform;
+			cgltf_node_transform_world(&node, glm::value_ptr(transform));
+			MeshDraw draw{
+				.transform = transform,
+				.mesh_index = (uint32_t)cgltf_mesh_index(data, node.mesh)
+			};
+
+			mesh_draws.push_back(draw);
 		}
 	}
 

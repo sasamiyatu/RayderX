@@ -8,7 +8,7 @@ set(VULKAN_SDK_DIR $ENV{VULKAN_SDK})
 set(SDL2_DIR ${VULKAN_SDK_DIR}/cmake)
 
 find_package(SDL2 REQUIRED)
-find_package(Vulkan REQUIRED volk)
+find_package(Vulkan REQUIRED volk dxc)
 
 file(GLOB_RECURSE CPP_SOURCE_FILES "src/*.h" "src/*.cpp")
 
@@ -18,9 +18,12 @@ add_executable(rayderx
 target_link_libraries(rayderx
   PRIVATE
     SDL2::SDL2 
-    Vulkan::volk)
+    Vulkan::volk
+    Vulkan::dxc_lib)
 
 target_include_directories(rayderx PRIVATE external/cgltf extern/glm)
+
+add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 
 set_target_properties(
     rayderx
