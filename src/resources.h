@@ -45,4 +45,4 @@ void pipeline_barrier(VkCommandBuffer command_buffer, std::initializer_list<VkIm
 Buffer create_buffer(VmaAllocator allocator, VkDeviceSize size, VkBufferUsageFlags usage, VmaAllocationCreateFlags allocation_flags = 0, void* initial_data = nullptr);
 VkImageView create_image_view(VkDevice device, VkImage image, VkImageViewType type, VkFormat format);
 Texture create_texture(VkDevice device, VmaAllocator allocator, uint32_t width, uint32_t height, uint32_t depth, VkFormat format, VkImageUsageFlags usage, uint32_t mip_levels = 1);
-bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAllocator allocator, VkCommandPool command_pool, VkCommandBuffer command_buffer, VkQueue queue, const Buffer& scratch);
+bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAllocator allocator, VkCommandPool command_pool, VkCommandBuffer command_buffer, VkQueue queue, const Buffer& scratch, bool is_srgb = false);

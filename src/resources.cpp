@@ -156,18 +156,18 @@ static constexpr uint32_t fourcc(const char str[5])
 
 static_assert(fourcc("DDS ") == DDS_MAGIC);
 
-static VkFormat get_format(const DDS_HEADER* header)
+static VkFormat get_format(const DDS_HEADER* header, bool srgb)
 {
 	if (header->ddspf.dwFlags & DDPF_FOURCC)
 	{
 		switch (header->ddspf.dwFourCC)
 		{
 		case fourcc("DXT1"):
-			return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+			return srgb ? VK_FORMAT_BC1_RGBA_SRGB_BLOCK : VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
 		case fourcc("DXT3"):
-			return VK_FORMAT_BC2_UNORM_BLOCK;
+			return srgb ? VK_FORMAT_BC2_SRGB_BLOCK : VK_FORMAT_BC2_UNORM_BLOCK;
 		case fourcc("DXT5"):
-			return VK_FORMAT_BC3_UNORM_BLOCK;
+			return srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
 		case fourcc("ATI2"):
 			return VK_FORMAT_BC5_UNORM_BLOCK;
 		default:
@@ -203,7 +203,9 @@ static size_t get_block_size(VkFormat format)
 	case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
 		return 8;
 	case VK_FORMAT_BC2_UNORM_BLOCK:
+	case VK_FORMAT_BC2_SRGB_BLOCK:
 	case VK_FORMAT_BC3_UNORM_BLOCK:
+	case VK_FORMAT_BC3_SRGB_BLOCK:
 	case VK_FORMAT_BC5_UNORM_BLOCK:
 		return 16;
 	default:
@@ -211,7 +213,7 @@ static size_t get_block_size(VkFormat format)
 	}
 }
 
-bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAllocator allocator, VkCommandPool command_pool, VkCommandBuffer command_buffer, VkQueue queue, const Buffer& scratch)
+bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAllocator allocator, VkCommandPool command_pool, VkCommandBuffer command_buffer, VkQueue queue, const Buffer& scratch, bool is_srgb)
 {
 	std::filesystem::path p = path;
 	if (!p.has_extension() || p.extension() != ".dds")
@@ -245,7 +247,7 @@ bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAlloca
 		return false;
 	}
 
-	VkFormat format = get_format(header);
+	VkFormat format = get_format(header, is_srgb);
 	if (format == VK_FORMAT_UNDEFINED)
 	{
 		printf("Unsupported format\n");

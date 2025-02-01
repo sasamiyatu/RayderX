@@ -7,6 +7,7 @@ struct VSOutput
 {
     float4 position: SV_Position;
     float3 normal : NORMAL0;
+    float2 uv : TEXCOORD0;
 };
 
 struct Vertex
@@ -18,6 +19,8 @@ struct Vertex
 };
 
 [[vk::binding(0)]] StructuredBuffer<Vertex> vertex_buffer;
+[[vk::combinedImageSampler]][[vk::binding(1)]] Texture2D basecolor_texture;
+[[vk::combinedImageSampler]][[vk::binding(1)]] SamplerState texture_sampler;
 
 struct PushConstants
 {
@@ -33,9 +36,10 @@ VSOutput vs_main(VSInput input)
 
     Vertex v = vertex_buffer[input.vertex_id];
     float4 position = mul(push_constants.viewproj, float4(v.position, 1.0f));
-    
+
     output.position = position;
     output.normal = v.normal;
+    output.uv = v.uv;
 
     return output;
 }
@@ -50,7 +54,10 @@ FSOutput fs_main(VSOutput input)
     FSOutput output = (FSOutput)0;
 
     float3 normal = normalize(input.normal);
-    output.color = float4(normal * 0.5 + 0.5, 1);
+
+    float4 basecolor = basecolor_texture.Sample(texture_sampler, input.uv);
+
+    output.color = float4(basecolor);
 
     return output;
 }

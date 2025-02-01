@@ -194,6 +194,10 @@ VkDevice create_device(VkInstance instance, VkPhysicalDevice physical_device, ui
 		.maintenance5 = VK_TRUE,
 	};
 
+	VkPhysicalDeviceFeatures features{
+		.samplerAnisotropy = VK_TRUE,
+	};
+
 	VkDeviceCreateInfo create_info{
 		.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 		.pNext = &features14,
@@ -203,7 +207,7 @@ VkDevice create_device(VkInstance instance, VkPhysicalDevice physical_device, ui
 		.ppEnabledLayerNames = nullptr,
 		.enabledExtensionCount = (uint32_t)extensions.size(),
 		.ppEnabledExtensionNames = extensions.data(),
-		.pEnabledFeatures = nullptr
+		.pEnabledFeatures = &features
 	};
 
 	VkDevice device = VK_NULL_HANDLE;
@@ -253,9 +257,23 @@ VkSurfaceKHR create_surface(VkInstance instance, SDL_Window* window)
 	return surface;
 }
 
+VkFormat get_swapchain_format(VkPhysicalDevice physical_device, VkSurfaceKHR surface)
+{
+	uint32_t count = 0;
+	VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &count, 0));
+	std::vector<VkSurfaceFormatKHR> formats(count);
+	VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &count, formats.data()));
+
+	for (uint32_t i = 0; i < count; ++i)
+		if (formats[i].format == VK_FORMAT_R8G8B8A8_SRGB || formats[i].format == VK_FORMAT_B8G8R8A8_SRGB)
+			return formats[i].format;
+
+	return formats[0].format;
+}
+
 void create_swapchain(Swapchain& swapchain, VkDevice device, VkPhysicalDevice physical_device, VkSurfaceKHR surface, uint32_t width, uint32_t height)
 {
-	VkFormat format = VK_FORMAT_B8G8R8A8_SRGB;
+	VkFormat format = get_swapchain_format(physical_device, surface);
 	VkSurfaceCapabilitiesKHR surface_capabilities;
 	VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &surface_capabilities));
 	VkSwapchainCreateInfoKHR create_info{
@@ -714,7 +732,6 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 
-
 	VkFence frame_fence = create_fence(device);
 	VkSemaphore acquire_semaphore = create_semaphore(device);
 	VkSemaphore release_semaphore = create_semaphore(device);
@@ -746,7 +763,7 @@ int main(int argc, char** argv)
 	for (size_t i = 0; i < texture_paths.size(); ++i)
 	{
 		Texture t;
-		if (!load_texture(t, texture_paths[i].string().c_str(), device, allocator, command_pool, command_buffer, queue, scratch_buffer))
+		if (!load_texture(t, texture_paths[i].string().c_str(), device, allocator, command_pool, command_buffer, queue, scratch_buffer, true))
 		{
 			printf("Failed to load texture: %s\n", texture_paths[i].string().c_str());
 			return EXIT_FAILURE;
@@ -767,12 +784,37 @@ int main(int argc, char** argv)
 			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			.descriptorCount = 1,
 			.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-		}},
+		},
+		{
+			.binding = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+		}
+		},
 		VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT);
 	VkPipelineLayout pipeline_layout = create_pipeline_layout(device, {descriptor_set_layout}, sizeof(glm::mat4), VK_SHADER_STAGE_VERTEX_BIT);
 	VkPipeline pipeline = create_pipeline(device, { vertex_shader, fragment_shader }, pipeline_layout, {swapchain.format}, DEPTH_FORMAT);
 
 	Texture depth_texture = create_texture(device, allocator, swapchain.width, swapchain.height, 1, DEPTH_FORMAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+
+	VkSampler anistotropic_sampler = VK_NULL_HANDLE;
+	{
+		VkSamplerCreateInfo create_info{
+			.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+			.magFilter = VK_FILTER_LINEAR,
+			.minFilter = VK_FILTER_LINEAR,
+			.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+			.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+			.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+			.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+			.anisotropyEnable = VK_TRUE,
+			.maxAnisotropy = 16.0f,
+			.maxLod = VK_LOD_CLAMP_NONE
+		};
+
+		VK_CHECK(vkCreateSampler(device, &create_info, nullptr, &anistotropic_sampler));
+	}
 
 	glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 0.0f, -2.0f), glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
 	glm::mat4 proj = glm::perspectiveFovRH_ZO(glm::radians(75.0f), (float)swapchain.width, (float)swapchain.height, 0.1f, 1000.0f);
@@ -834,26 +876,16 @@ int main(int argc, char** argv)
 			vkCmdPipelineBarrier2(command_buffer, &dependency_info);
 		}
 
-		VkClearColorValue clear_value{ 0.5f, 0.2f, 1.0f, 1.0f };
-		VkImageSubresourceRange range{
-			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			.baseMipLevel = 0,
-			.levelCount = 1,
-			.baseArrayLayer = 0,
-			.layerCount = 1
-		};
-
-		vkCmdClearColorImage(command_buffer, swapchain.images[image_index], VK_IMAGE_LAYOUT_GENERAL, &clear_value, 1, &range);
-
 		VkRenderingAttachmentInfo attachment_info{
 			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
 			.imageView = views[image_index],
 			.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-			.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+			.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
 			.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+			.clearValue = {.color = {0.0f, 0.0f, 0.0f, 1.0f} }
 		};
 
-		VkRenderingAttachmentInfo depth_info{
+		VkRenderingAttachmentInfo depth_info {
 			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
 			.imageView = depth_texture.view,
 			.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
@@ -862,7 +894,7 @@ int main(int argc, char** argv)
 			.clearValue = {.depthStencil = {.depth = 1.0f} }
 		};
 
-		VkRenderingInfo rendering_info{
+		VkRenderingInfo rendering_info {
 			.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
 			.renderArea = { 0, 0, swapchain.width, swapchain.height },
 			.layerCount = 1,
@@ -900,16 +932,34 @@ int main(int argc, char** argv)
 			.range = VK_WHOLE_SIZE
 		};
 
-		VkWriteDescriptorSet write{
-			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-			.dstSet = 0,
-			.dstBinding = 0,
-			.dstArrayElement = 0,
-			.descriptorCount = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			.pBufferInfo = &buffer_info,
+		VkDescriptorImageInfo image_info{
+			.sampler = anistotropic_sampler,
+			.imageView = textures[0].view,
+			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
 		};
-		vkCmdPushDescriptorSet(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &write);
+
+		VkWriteDescriptorSet writes[] = {
+			{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = 0,
+				.dstBinding = 0,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.pBufferInfo = &buffer_info,
+			},
+			{
+				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet = 0,
+				.dstBinding = 1,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.pImageInfo = &image_info,
+			},
+		};
+
+		vkCmdPushDescriptorSet(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, (uint32_t)std::size(writes), writes);
 
 		for (const auto& d : mesh_draws)
 		{
@@ -993,6 +1043,7 @@ int main(int argc, char** argv)
 
 	SDL_DestroyWindow(window);
 
+	vkDestroySampler(device, anistotropic_sampler, nullptr);
 	for (Texture& t : textures) t.destroy();
 	scratch_buffer.destroy();
 	vertex_buffer.destroy();
