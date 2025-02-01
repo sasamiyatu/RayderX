@@ -7,15 +7,16 @@ struct Buffer
 	VmaAllocator allocator;
 	VkBuffer buffer;
 	VmaAllocation allocation;
+	VkDeviceSize size;
 
-	inline void* map()
+	inline void* map() const
 	{
 		void* data = nullptr;
 		VK_CHECK(vmaMapMemory(allocator, allocation, &data));
 		return data;
 	}
 
-	inline void unmap() { vmaUnmapMemory(allocator, allocation); }
+	inline void unmap() const { vmaUnmapMemory(allocator, allocation); }
 	inline void destroy() { vmaDestroyBuffer(allocator, buffer, allocation); }
 };
 
@@ -34,6 +35,14 @@ struct Texture
 	}
 };
 
+VkImageMemoryBarrier2 image_barrier(VkImage image, 
+	VkPipelineStageFlags2 src_stage_mask, VkAccessFlags2 src_access_mask, VkImageLayout old_layout, 
+	VkPipelineStageFlags2 dst_stage_mask, VkAccessFlags2 dst_access_mask, VkImageLayout new_layout,
+	VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT);
+
+void pipeline_barrier(VkCommandBuffer command_buffer, std::initializer_list<VkImageMemoryBarrier2> image_barriers);
+
 Buffer create_buffer(VmaAllocator allocator, VkDeviceSize size, VkBufferUsageFlags usage, VmaAllocationCreateFlags allocation_flags = 0, void* initial_data = nullptr);
 VkImageView create_image_view(VkDevice device, VkImage image, VkImageViewType type, VkFormat format);
-Texture create_texture(VkDevice device, VmaAllocator allocator, uint32_t width, uint32_t height, uint32_t depth, VkFormat format, VkImageUsageFlags usage);
+Texture create_texture(VkDevice device, VmaAllocator allocator, uint32_t width, uint32_t height, uint32_t depth, VkFormat format, VkImageUsageFlags usage, uint32_t mip_levels = 1);
+bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAllocator allocator, VkCommandPool command_pool, VkCommandBuffer command_buffer, VkQueue queue, const Buffer& scratch);

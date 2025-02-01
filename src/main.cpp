@@ -28,6 +28,8 @@
 
 #include "scene.h"
 #include "resources.h"
+#include "sdkmesh.h"
+#include "dds.h"
 
 static constexpr VkFormat DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
 
@@ -317,26 +319,6 @@ VmaAllocator create_allocator(VkInstance instance, VkPhysicalDevice physical_dev
 	return allocator;
 }
 
-std::string read_text_file(const char* filepath)
-{
-	FILE* f = fopen(filepath, "rb");
-	if (!f)
-	{
-		printf("Failed to open file %s", filepath);
-		return std::string();
-	}
-
-	fseek(f, 0, SEEK_END);
-	long filesize = ftell(f);
-	fseek(f, 0, SEEK_SET);
-	uint8_t* data = (uint8_t*)malloc(filesize);
-	assert(data);
-	size_t bytes_read = fread(data, 1, filesize, f);
-	assert(bytes_read == filesize);
-
-	return std::string((const char*)data, (size_t)filesize);
-}
-
 struct ShaderCompiler
 {
 	CComPtr<IDxcUtils> dxc_utils;
@@ -601,7 +583,6 @@ bool create_shader_compiler(ShaderCompiler& compiler)
 	return true;
 }
 
-
 int main(int argc, char** argv)
 {
 	if (argc != 2)
@@ -610,17 +591,104 @@ int main(int argc, char** argv)
 		return 1;
 	}
 
+
 	std::vector<Mesh> meshes;
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
 	std::vector<MeshDraw> mesh_draws;
-	if (!load_scene(argv[1], meshes, vertices, indices, mesh_draws))
-	{
-		printf("Failed to load scene!\n");
-		return 1;
-	}
+	std::vector<std::filesystem::path> texture_paths;
+	std::vector<Texture> textures; // Loaded later
 
-    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "1");
+	std::filesystem::path ext = std::filesystem::path(argv[1]).extension();
+	if (ext == ".glb" || ext == ".gltf")
+	{
+		if (!load_scene(argv[1], meshes, vertices, indices, mesh_draws))
+		{
+			printf("Failed to load scene!\n");
+			return 1;
+		}
+	}
+	else if (ext == ".sdkmesh")
+	{
+		std::vector<uint8_t> sdkmesh;
+		if (!read_binary_file(argv[1], sdkmesh))
+		{
+			printf("Failed to load sdkmesh\n");
+			return EXIT_FAILURE;
+		}
+
+		uint8_t* data = sdkmesh.data();
+		SDKMESH_HEADER* header = (SDKMESH_HEADER*)data;
+		SDKMESH_VERTEX_BUFFER_HEADER* vertex_buffer_array = (SDKMESH_VERTEX_BUFFER_HEADER*)(data +
+			header->VertexStreamHeadersOffset);
+		SDKMESH_INDEX_BUFFER_HEADER* index_buffer_array = (SDKMESH_INDEX_BUFFER_HEADER*)(data +
+			header->IndexStreamHeadersOffset);
+		SDKMESH_MESH* mesh = (SDKMESH_MESH*)(data + header->MeshDataOffset);
+		SDKMESH_SUBSET* subset = (SDKMESH_SUBSET*)(data + header->SubsetDataOffset);
+		SDKMESH_FRAME* frame = (SDKMESH_FRAME*)(data + header->FrameDataOffset);
+		SDKMESH_MATERIAL* material = (SDKMESH_MATERIAL*)(data + header->MaterialDataOffset);
+
+		struct SDKVertex
+		{
+			glm::vec3 position;
+			glm::vec3 normal;
+			glm::vec2 texcoord;
+			glm::vec3 tangent;
+		};
+
+		assert(header->NumVertexBuffers == 1);
+		assert(header->NumIndexBuffers == 1);
+		assert(sizeof(SDKVertex) == vertex_buffer_array[0].StrideBytes);
+
+		std::vector<SDKVertex> verts(vertex_buffer_array->NumVertices);
+		memcpy(verts.data(), data + vertex_buffer_array->DataOffset, vertex_buffer_array->SizeBytes);
+
+		std::vector<uint32_t> inds(index_buffer_array->NumIndices);
+		uint32_t bytes_per_index = index_buffer_array->IndexType == 0 ? 2 : 4;
+		assert(index_buffer_array->SizeBytes / bytes_per_index == index_buffer_array->NumIndices);
+		for (uint32_t i = 0; i < index_buffer_array->NumIndices; ++i)
+		{
+			inds[i] = ((uint16_t*)(data + index_buffer_array->DataOffset))[i];
+		}
+
+		Mesh m{
+			.first_vertex = 0,
+			.vertex_count = (uint32_t)verts.size(),
+			.first_index = 0,
+			.index_count = (uint32_t)inds.size(),
+		};
+
+		MeshDraw mesh_draw{
+			.transform = glm::mat4(1.0f),
+			.mesh_index = 0
+		};
+
+		indices = inds;
+		vertices.resize(verts.size());
+		for (size_t i = 0; i < verts.size(); ++i)
+		{
+			vertices[i] = {
+				.position = verts[i].position,
+				.normal = verts[i].normal,
+				.tangent = glm::vec4(verts[i].tangent, 1.0f),
+				.uv = verts[i].texcoord,
+			};
+		}
+
+		
+		mesh_draws.push_back(mesh_draw);
+		meshes.push_back(m);
+
+		texture_paths.push_back(std::filesystem::path(argv[1]).parent_path() / std::filesystem::path(material->DiffuseTexture));
+		texture_paths.push_back(std::filesystem::path(argv[1]).parent_path() / std::filesystem::path(material->NormalTexture));
+	}
+	else
+	{
+		printf("Unsupported file format: %s\n", ext.string().c_str());
+		return EXIT_FAILURE;
+	}
+	
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_SCALING, "1");
 
 	SDL_Window* window = SDL_CreateWindow("RayderX", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, SDL_WINDOW_SHOWN | SDL_WINDOW_VULKAN);
 	int window_width, window_height;
@@ -637,6 +705,8 @@ int main(int argc, char** argv)
 	VkQueue queue = VK_NULL_HANDLE;
 	vkGetDeviceQueue(device, queue_family, 0, &queue);
 
+	VmaAllocator allocator = create_allocator(instance, physical_device, device);
+
 	ShaderCompiler compiler{};
 	if (!create_shader_compiler(compiler))
 	{
@@ -644,7 +714,6 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 
-	VmaAllocator allocator = create_allocator(instance, physical_device, device);
 
 	VkFence frame_fence = create_fence(device);
 	VkSemaphore acquire_semaphore = create_semaphore(device);
@@ -672,6 +741,19 @@ int main(int argc, char** argv)
 		VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, indices.data());
 	Buffer vertex_buffer = create_buffer(allocator, vertices.size() * sizeof(Vertex), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 		VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, vertices.data());
+	Buffer scratch_buffer = create_buffer(allocator, 1024 * 1024 * 128, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
+
+	for (size_t i = 0; i < texture_paths.size(); ++i)
+	{
+		Texture t;
+		if (!load_texture(t, texture_paths[i].string().c_str(), device, allocator, command_pool, command_buffer, queue, scratch_buffer))
+		{
+			printf("Failed to load texture: %s\n", texture_paths[i].string().c_str());
+			return EXIT_FAILURE;
+		}
+
+		textures.push_back(t);
+	}
 
 	Shader vertex_shader{};
 	Shader fragment_shader{};
@@ -692,7 +774,7 @@ int main(int argc, char** argv)
 
 	Texture depth_texture = create_texture(device, allocator, swapchain.width, swapchain.height, 1, DEPTH_FORMAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
 
-	glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 0.0f, 5.0f), glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+	glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 0.0f, -2.0f), glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
 	glm::mat4 proj = glm::perspectiveFovRH_ZO(glm::radians(75.0f), (float)swapchain.width, (float)swapchain.height, 0.1f, 1000.0f);
 	glm::mat4 viewproj = proj * view;
 
@@ -911,6 +993,8 @@ int main(int argc, char** argv)
 
 	SDL_DestroyWindow(window);
 
+	for (Texture& t : textures) t.destroy();
+	scratch_buffer.destroy();
 	vertex_buffer.destroy();
 	index_buffer.destroy();
 	depth_texture.destroy();
