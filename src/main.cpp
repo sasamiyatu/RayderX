@@ -22,6 +22,8 @@
 
 #include <dxc/dxcapi.h>
 
+#include "spirv_reflect.h"
+
 #include <vector>
 #include <stdio.h>
 #include <filesystem>
@@ -349,6 +351,10 @@ struct Shader
 	std::vector<uint8_t> spirv;
 	VkShaderStageFlagBits stage;
 	std::string entry_point;
+
+	VkDescriptorType descriptor_types[32];
+	uint32_t resource_mask;
+	size_t push_constants_size;
 };
 
 static const wchar_t* get_shader_type_str(VkShaderStageFlagBits shader_stage)
@@ -426,21 +432,88 @@ bool load_shader(Shader& shader, const ShaderCompiler& compiler, VkDevice device
 
 	std::filesystem::current_path(cwd);
 
+	SpvReflectShaderModule mod;
+	SpvReflectResult result = spvReflectCreateShaderModule(shader.spirv.size(), shader.spirv.data(), &mod);
+	if (result != SPV_REFLECT_RESULT_SUCCESS)
+	{
+		printf("Failed to reflect shader module\n");
+		return false;
+	}
+
+	// Only gather resources from set 0
+	if (mod.descriptor_set_count > 0)
+	{
+		const SpvReflectDescriptorSet& set = mod.descriptor_sets[0];
+		for (uint32_t i = 0; i < set.binding_count; ++i)
+		{
+			const SpvReflectDescriptorBinding* binding = set.bindings[i];
+			shader.descriptor_types[binding->binding] = (VkDescriptorType)binding->descriptor_type;
+			shader.resource_mask |= 1 << binding->binding;
+		}
+	}
+
+	if (mod.push_constant_block_count > 0)
+	{
+		const SpvReflectBlockVariable& block = mod.push_constant_blocks[0];
+		shader.push_constants_size = block.size;
+	}
+
+	spvReflectDestroyShaderModule(&mod);
+
 	return true;
 }
 
-VkDescriptorSetLayout create_descriptor_set_layout(VkDevice device, std::initializer_list<VkDescriptorSetLayoutBinding> bindings, VkDescriptorSetLayoutCreateFlags flags = 0)
+VkDescriptorSetLayout create_descriptor_set_layout(VkDevice device, const std::vector<VkDescriptorSetLayoutBinding>& bindings, VkDescriptorSetLayoutCreateFlags flags = 0)
 {
 	VkDescriptorSetLayoutCreateInfo create_info{
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 		.flags = flags,
 		.bindingCount = (uint32_t)bindings.size(),
-		.pBindings = bindings.begin(),
+		.pBindings = bindings.data(),
 	};
 
 	VkDescriptorSetLayout layout = VK_NULL_HANDLE;
 	VK_CHECK(vkCreateDescriptorSetLayout(device, &create_info, nullptr, &layout));
 	return layout;
+}
+
+std::vector<VkDescriptorSetLayoutBinding> get_descriptor_set_layout_binding(std::initializer_list<Shader> shaders)
+{
+	VkDescriptorType resources[32] = {};
+	uint32_t resource_mask = 0;
+	VkShaderStageFlags stage_flags = 0;
+
+	for (const Shader& shader : shaders)
+	{
+		stage_flags |= shader.stage;
+		for (uint32_t i = 0; i < 32; ++i)
+		{
+			if (shader.resource_mask & (1 << i))
+			{
+				resource_mask |= (1 << i);
+				resources[i] = shader.descriptor_types[i];
+			}
+		}
+	}
+
+	std::vector<VkDescriptorSetLayoutBinding> bindings;
+
+	for (uint32_t i = 0; i < 32; ++i)
+	{
+		if (resource_mask & (1 << i))
+		{
+			VkDescriptorSetLayoutBinding binding{
+				.binding = i,
+				.descriptorType = resources[i],
+				.descriptorCount = 1,
+				.stageFlags = stage_flags,
+				.pImmutableSamplers = nullptr
+			};
+			bindings.push_back(binding);
+		}
+	}
+
+	return bindings;
 }
 
 VkPipelineLayout create_pipeline_layout(VkDevice device, std::initializer_list<VkDescriptorSetLayout> set_layouts = {}, uint32_t push_constants_size = 0, VkShaderStageFlags push_constant_stages = 0)
@@ -601,6 +674,102 @@ bool create_shader_compiler(ShaderCompiler& compiler)
 	return true;
 }
 
+struct DescriptorInfo
+{
+	union
+	{
+		VkDescriptorImageInfo image_info;
+		VkDescriptorBufferInfo buffer_info;
+		VkAccelerationStructureKHR acceleration_structure;
+	};
+
+	inline DescriptorInfo() {}
+
+	inline DescriptorInfo(VkSampler sampler)
+	{
+		image_info = {};
+		image_info.sampler = sampler;
+	}
+
+	inline DescriptorInfo(VkBuffer buffer, size_t offset = 0, size_t range = VK_WHOLE_SIZE)
+	{
+		buffer_info = {};
+		buffer_info.buffer = buffer;
+		buffer_info.offset = offset;
+		buffer_info.range = range;
+	}
+
+	inline DescriptorInfo(VkImageView image_view, VkImageLayout layout)
+	{
+		image_info = {};
+		image_info.imageView = image_view;
+		image_info.imageLayout = layout;
+	}
+
+	inline DescriptorInfo(VkSampler sampler, VkImageView image_view, VkImageLayout layout)
+	{
+		image_info = {};
+		image_info.sampler = sampler;
+		image_info.imageView = image_view;
+		image_info.imageLayout = layout;
+	}
+
+	inline DescriptorInfo(VkAccelerationStructureKHR as)
+	{
+		acceleration_structure = as;
+	}
+};
+
+VkDescriptorUpdateTemplate create_descriptor_update_template(VkDevice device, VkDescriptorSetLayout layout, VkPipelineLayout pipeline_layout, std::initializer_list<Shader> shaders, bool uses_push_descriptors = false)
+{
+	uint32_t resource_mask = 0;
+	VkDescriptorType descriptor_types[32] = {};
+
+	for (const auto& shader : shaders)
+	{
+		for (uint32_t i = 0; i < 32; ++i)
+		{
+			if (shader.resource_mask & (1 << i))
+			{
+				resource_mask |= (1 << i);
+				descriptor_types[i] = shader.descriptor_types[i];
+			}
+		}
+	}
+
+	std::vector<VkDescriptorUpdateTemplateEntry> entries;
+
+	for (uint32_t i = 0; i < 32; ++i)
+	{
+		if (resource_mask & (1 << i))
+		{
+			VkDescriptorUpdateTemplateEntry entry{
+				.dstBinding = i,
+				.dstArrayElement = 0,
+				.descriptorCount = 1,
+				.descriptorType = descriptor_types[i],
+				.offset = i * sizeof(DescriptorInfo),
+				.stride = sizeof(DescriptorInfo)
+			};
+			entries.push_back(entry);
+		}
+	}
+
+	VkDescriptorUpdateTemplateCreateInfo create_info{
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_UPDATE_TEMPLATE_CREATE_INFO,
+		.descriptorUpdateEntryCount = (uint32_t)entries.size(),
+		.pDescriptorUpdateEntries = entries.data(),
+		.templateType = uses_push_descriptors ? VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_PUSH_DESCRIPTORS :  VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_DESCRIPTOR_SET,
+		.descriptorSetLayout = layout,
+		.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+		.pipelineLayout = pipeline_layout,
+	};
+
+	VkDescriptorUpdateTemplate update_template = VK_NULL_HANDLE;
+	VK_CHECK(vkCreateDescriptorUpdateTemplate(device, &create_info, nullptr, &update_template));
+	return update_template;
+}
+
 int main(int argc, char** argv)
 {
 	if (argc != 2)
@@ -609,6 +778,57 @@ int main(int argc, char** argv)
 		return 1;
 	}
 
+
+	
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_SCALING, "1");
+
+	SDL_Window* window = SDL_CreateWindow("RayderX", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, SDL_WINDOW_SHOWN | SDL_WINDOW_VULKAN);
+	int window_width, window_height;
+	SDL_GetWindowSizeInPixels(window, &window_width, &window_height);
+
+	VK_CHECK(volkInitialize());
+
+	VkInstance instance = create_instance();
+	VkDebugUtilsMessengerEXT debug_messenger = create_debug_messenger(instance);
+
+	VkPhysicalDevice physical_device = pick_physical_device(instance);
+	uint32_t queue_family = find_queue_family(physical_device);
+	VkDevice device = create_device(instance, physical_device, queue_family);
+	VkQueue queue = VK_NULL_HANDLE;
+	vkGetDeviceQueue(device, queue_family, 0, &queue);
+
+	VmaAllocator allocator = create_allocator(instance, physical_device, device);
+
+	ShaderCompiler compiler{};
+	if (!create_shader_compiler(compiler))
+	{
+		printf("Failed to create shader compiler!\n");
+		return EXIT_FAILURE;
+	}
+
+	VkFence frame_fence = create_fence(device);
+	VkSemaphore acquire_semaphore = create_semaphore(device);
+	VkSemaphore release_semaphore = create_semaphore(device);
+
+	VkSurfaceKHR surface = create_surface(instance, window);
+	Swapchain swapchain{};
+	create_swapchain(swapchain, device, physical_device, surface, window_width, window_height);
+	std::vector<VkImageView> views(swapchain.image_count);
+	for (size_t i = 0; i < swapchain.image_count; ++i)
+		views[i] = create_image_view(device, swapchain.images[i], VK_IMAGE_VIEW_TYPE_2D, swapchain.format);
+
+	VkCommandPool command_pool = crate_command_pool(device, queue_family);
+
+	VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+	VkCommandBufferAllocateInfo allocate_info{
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+		.commandPool = command_pool,
+		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+		.commandBufferCount = 1
+	};
+	VK_CHECK(vkAllocateCommandBuffers(device, &allocate_info, &command_buffer));
+
+	Buffer scratch_buffer = create_buffer(allocator, 1024 * 1024 * 128, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
 
 	std::vector<Mesh> meshes;
 	std::vector<Vertex> vertices;
@@ -693,84 +913,37 @@ int main(int argc, char** argv)
 			};
 		}
 
-		
+
 		mesh_draws.push_back(mesh_draw);
 		meshes.push_back(m);
 
-		texture_paths.push_back(std::filesystem::path(argv[1]).parent_path() / std::filesystem::path(material->DiffuseTexture));
-		texture_paths.push_back(std::filesystem::path(argv[1]).parent_path() / std::filesystem::path(material->NormalTexture));
+		std::filesystem::path diffuse_path = std::filesystem::path(argv[1]).parent_path() / std::filesystem::path(material->DiffuseTexture);
+		std::filesystem::path normal_path = std::filesystem::path(argv[1]).parent_path() / std::filesystem::path(material->NormalTexture);
+		Texture diffuse, normal;
+		if (!load_texture(diffuse, diffuse_path.string().c_str(), device, allocator, command_pool, command_buffer, queue, scratch_buffer, true))
+		{
+			printf("Failed to load texture: %s\n", diffuse_path.string().c_str());
+			return EXIT_FAILURE;
+		}
+		if (!load_texture(normal, normal_path.string().c_str(), device, allocator, command_pool, command_buffer, queue, scratch_buffer, true))
+		{
+			printf("Failed to load texture: %s\n", diffuse_path.string().c_str());
+			return EXIT_FAILURE;
+		}
+
+		textures.insert(textures.end(), { diffuse, normal });
 	}
 	else
 	{
 		printf("Unsupported file format: %s\n", ext.string().c_str());
 		return EXIT_FAILURE;
 	}
-	
-    SDL_SetHint(SDL_HINT_WINDOWS_DPI_SCALING, "1");
 
-	SDL_Window* window = SDL_CreateWindow("RayderX", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, SDL_WINDOW_SHOWN | SDL_WINDOW_VULKAN);
-	int window_width, window_height;
-	SDL_GetWindowSizeInPixels(window, &window_width, &window_height);
-
-	VK_CHECK(volkInitialize());
-
-	VkInstance instance = create_instance();
-	VkDebugUtilsMessengerEXT debug_messenger = create_debug_messenger(instance);
-
-	VkPhysicalDevice physical_device = pick_physical_device(instance);
-	uint32_t queue_family = find_queue_family(physical_device);
-	VkDevice device = create_device(instance, physical_device, queue_family);
-	VkQueue queue = VK_NULL_HANDLE;
-	vkGetDeviceQueue(device, queue_family, 0, &queue);
-
-	VmaAllocator allocator = create_allocator(instance, physical_device, device);
-
-	ShaderCompiler compiler{};
-	if (!create_shader_compiler(compiler))
-	{
-		printf("Failed to create shader compiler!\n");
-		return EXIT_FAILURE;
-	}
-
-	VkFence frame_fence = create_fence(device);
-	VkSemaphore acquire_semaphore = create_semaphore(device);
-	VkSemaphore release_semaphore = create_semaphore(device);
-
-	VkSurfaceKHR surface = create_surface(instance, window);
-	Swapchain swapchain{};
-	create_swapchain(swapchain, device, physical_device, surface, window_width, window_height);
-	std::vector<VkImageView> views(swapchain.image_count);
-	for (size_t i = 0; i < swapchain.image_count; ++i)
-		views[i] = create_image_view(device, swapchain.images[i], VK_IMAGE_VIEW_TYPE_2D, swapchain.format);
-
-	VkCommandPool command_pool = crate_command_pool(device, queue_family);
-
-	VkCommandBuffer command_buffer = VK_NULL_HANDLE;
-	VkCommandBufferAllocateInfo allocate_info{
-		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-		.commandPool = command_pool,
-		.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-		.commandBufferCount = 1
-	};
-	VK_CHECK(vkAllocateCommandBuffers(device, &allocate_info, &command_buffer));
-
-	Buffer index_buffer = create_buffer(allocator, indices.size() * sizeof(uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, 
+	Buffer index_buffer = create_buffer(allocator, indices.size() * sizeof(uint32_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
 		VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, indices.data());
 	Buffer vertex_buffer = create_buffer(allocator, vertices.size() * sizeof(Vertex), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 		VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, vertices.data());
-	Buffer scratch_buffer = create_buffer(allocator, 1024 * 1024 * 128, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
 
-	for (size_t i = 0; i < texture_paths.size(); ++i)
-	{
-		Texture t;
-		if (!load_texture(t, texture_paths[i].string().c_str(), device, allocator, command_pool, command_buffer, queue, scratch_buffer, true))
-		{
-			printf("Failed to load texture: %s\n", texture_paths[i].string().c_str());
-			return EXIT_FAILURE;
-		}
-
-		textures.push_back(t);
-	}
 
 	Shader vertex_shader{};
 	Shader fragment_shader{};
@@ -778,22 +951,10 @@ int main(int argc, char** argv)
 	FAIL_ON_ERROR(load_shader(vertex_shader, compiler, device, "forward.hlsl", "vs_main", VK_SHADER_STAGE_VERTEX_BIT));
 	FAIL_ON_ERROR(load_shader(fragment_shader, compiler, device, "forward.hlsl", "fs_main", VK_SHADER_STAGE_FRAGMENT_BIT));
 
-	VkDescriptorSetLayout descriptor_set_layout = create_descriptor_set_layout(device, {
-		{
-			.binding = 0,
-			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-		},
-		{
-			.binding = 1,
-			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-			.descriptorCount = 1,
-			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-		}
-		},
+	VkDescriptorSetLayout descriptor_set_layout = create_descriptor_set_layout(device, get_descriptor_set_layout_binding({ vertex_shader, fragment_shader }), 
 		VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT);
 	VkPipelineLayout pipeline_layout = create_pipeline_layout(device, {descriptor_set_layout}, sizeof(glm::mat4), VK_SHADER_STAGE_VERTEX_BIT);
+	VkDescriptorUpdateTemplate update_template = create_descriptor_update_template(device, descriptor_set_layout, pipeline_layout, { vertex_shader, fragment_shader }, true);
 	VkPipeline pipeline = create_pipeline(device, { vertex_shader, fragment_shader }, pipeline_layout, {swapchain.format}, DEPTH_FORMAT);
 
 	Texture depth_texture = create_texture(device, allocator, swapchain.width, swapchain.height, 1, DEPTH_FORMAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
@@ -926,40 +1087,12 @@ int main(int argc, char** argv)
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 		vkCmdBindIndexBuffer(command_buffer, index_buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
-		VkDescriptorBufferInfo buffer_info{
-			.buffer = vertex_buffer.buffer,
-			.offset = 0,
-			.range = VK_WHOLE_SIZE
+		DescriptorInfo descriptor_info[] = {
+			DescriptorInfo(vertex_buffer.buffer),
+			DescriptorInfo(anistotropic_sampler, textures[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
 		};
 
-		VkDescriptorImageInfo image_info{
-			.sampler = anistotropic_sampler,
-			.imageView = textures[0].view,
-			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-		};
-
-		VkWriteDescriptorSet writes[] = {
-			{
-				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-				.dstSet = 0,
-				.dstBinding = 0,
-				.dstArrayElement = 0,
-				.descriptorCount = 1,
-				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				.pBufferInfo = &buffer_info,
-			},
-			{
-				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-				.dstSet = 0,
-				.dstBinding = 1,
-				.dstArrayElement = 0,
-				.descriptorCount = 1,
-				.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-				.pImageInfo = &image_info,
-			},
-		};
-
-		vkCmdPushDescriptorSet(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, (uint32_t)std::size(writes), writes);
+		vkCmdPushDescriptorSetWithTemplate(command_buffer, update_template, pipeline_layout, 0, descriptor_info);
 
 		for (const auto& d : mesh_draws)
 		{
@@ -1049,6 +1182,7 @@ int main(int argc, char** argv)
 	vertex_buffer.destroy();
 	index_buffer.destroy();
 	depth_texture.destroy();
+	vkDestroyDescriptorUpdateTemplate(device, update_template, nullptr);
 	vkDestroyDescriptorSetLayout(device, descriptor_set_layout, nullptr);
 	vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
 	vkDestroyPipeline(device, pipeline, nullptr);

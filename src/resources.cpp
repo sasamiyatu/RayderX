@@ -257,7 +257,7 @@ bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAlloca
 	size_t block_size = get_block_size(format);
 	assert(block_size != 0);
 
-	size_t image_size = get_image_size_bc(header->dwWidth, header->dwHeight, header->dwMipMapCount, block_size);
+	size_t image_size = get_image_size_bc(header->dwWidth, header->dwHeight, header->dwMipMapCount, (uint32_t)block_size);
 	size_t file_image_size = data.size() - sizeof(uint32_t) - sizeof(DDS_HEADER);
 
 	assert(image_size == file_image_size);

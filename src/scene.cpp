@@ -34,9 +34,9 @@ bool load_scene(const char* path, std::vector<Mesh>& meshes, std::vector<Vertex>
 		{
 			const cgltf_primitive& prim = mesh.primitives[j];
 			uint32_t first_vertex = (uint32_t)vertices.size();
-			uint32_t vertex_count = prim.attributes[0].data->count;
+			uint32_t vertex_count = (uint32_t)prim.attributes[0].data->count;
 			uint32_t first_index = (uint32_t)indices.size();
-			uint32_t index_count = prim.indices->count;	
+			uint32_t index_count = (uint32_t)prim.indices->count;	
 
 			Mesh m{
 				.first_vertex = first_vertex,
