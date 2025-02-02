@@ -23,6 +23,15 @@ struct MeshDraw
 {
 	glm::mat4 transform;
 	uint32_t mesh_index;
+	int material_index;
+};
+
+struct Material
+{
+	int basecolor_texture;
+	int normal_texture;
+	int metallic_roughness_texture;
+	int specular_texture;
 };
 
 bool load_scene(const char* path, std::vector<Mesh>& meshes, std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, std::vector<MeshDraw>& mesh_draws);

@@ -179,6 +179,38 @@ static VkFormat get_format(const DDS_HEADER* header, bool srgb)
 		}
 		}
 	}
+	else if (header->ddspf.dwFlags & DDPF_RGB)
+	{
+		// 3 channels textures aren't supported on most desktop hardware
+		if (header->ddspf.dwRGBBitCount == 32 || header->ddspf.dwRGBBitCount == 24)
+		{
+			if (header->ddspf.dwRBitMask == 0x00ff0000 && header->ddspf.dwGBitMask == 0x0000ff00 && header->ddspf.dwBBitMask == 0x000000ff)
+				return srgb ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_B8G8R8A8_UNORM;
+			else if (header->ddspf.dwRBitMask == 0x000000ff && header->ddspf.dwGBitMask == 0x0000ff00 && header->ddspf.dwBBitMask == 0x00ff0000)
+				return srgb ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_B8G8R8A8_UNORM;
+			else
+				return VK_FORMAT_UNDEFINED;
+		}
+		else if (header->ddspf.dwRGBBitCount == 8)
+		{
+			assert(header->ddspf.dwRBitMask == 0xFF);
+			return srgb ? VK_FORMAT_R8_SRGB : VK_FORMAT_R8_UNORM;
+		}
+		else
+		{
+			return VK_FORMAT_UNDEFINED;
+		}
+	}
+	else if (header->ddspf.dwFlags & DDPF_LUMINANCE)
+	{
+		assert(header->ddspf.dwRBitMask == 0xFF);
+		assert(header->ddspf.dwRGBBitCount == 8);
+		return srgb ? VK_FORMAT_R8_SRGB : VK_FORMAT_R8_UNORM;
+	}
+	else
+	{
+		return VK_FORMAT_UNDEFINED;
+	}
 
 	return VK_FORMAT_UNDEFINED;
 }
@@ -189,6 +221,20 @@ static size_t get_image_size_bc(uint32_t width, uint32_t height, uint32_t levels
 	for (uint32_t i = 0; i < levels; ++i)
 	{
 		result += std::max(1u, (width + 3) / 4 ) * std::max(1u, (height + 3) / 4) * block_size;
+		width = width > 1 ? (width >> 1) : 1;
+		height = height > 1 ? (height >> 1) : 1;
+	}
+
+	return result;
+}
+
+static size_t get_image_size(uint32_t width, uint32_t height, uint32_t levels, uint32_t bits_per_pixel)
+{
+	assert(bits_per_pixel % 8 == 0);
+	size_t result = 0;
+	for (uint32_t i = 0; i < levels; ++i)
+	{
+		result += width * height * (bits_per_pixel / 8);
 		width = width > 1 ? (width >> 1) : 1;
 		height = height > 1 ? (height >> 1) : 1;
 	}
@@ -210,6 +256,22 @@ static size_t get_block_size(VkFormat format)
 		return 16;
 	default:
 		return 0;
+	}
+}
+
+static bool is_compressed_format(VkFormat format)
+{
+	switch (format)
+	{
+	case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
+	case VK_FORMAT_BC2_UNORM_BLOCK:
+	case VK_FORMAT_BC2_SRGB_BLOCK:
+	case VK_FORMAT_BC3_UNORM_BLOCK:
+	case VK_FORMAT_BC3_SRGB_BLOCK:
+	case VK_FORMAT_BC5_UNORM_BLOCK:
+		return true;
+	default:
+		return false;
 	}
 }
 
@@ -254,19 +316,44 @@ bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAlloca
 		return false;
 	}
 
+	bool is_compressed = is_compressed_format(format);
+
 	size_t block_size = get_block_size(format);
-	assert(block_size != 0);
+	assert(!is_compressed || block_size != 0);
 
-	size_t image_size = get_image_size_bc(header->dwWidth, header->dwHeight, header->dwMipMapCount, (uint32_t)block_size);
+	uint32_t mip_levels = header->dwMipMapCount == 0 ? 1 : header->dwMipMapCount;
+
+	size_t image_size = is_compressed
+		? get_image_size_bc(header->dwWidth, header->dwHeight, mip_levels, (uint32_t)block_size)
+		: get_image_size(header->dwWidth, header->dwHeight, mip_levels, header->ddspf.dwRGBBitCount);
 	size_t file_image_size = data.size() - sizeof(uint32_t) - sizeof(DDS_HEADER);
-
 	assert(image_size == file_image_size);
-	assert(image_size <= scratch.size);
 
-	texture = create_texture(device, allocator, header->dwWidth, header->dwHeight, 1, format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, header->dwMipMapCount);
+	size_t required_size = !is_compressed && header->ddspf.dwRGBBitCount == 24
+		? get_image_size(header->dwWidth, header->dwHeight, mip_levels, 32)
+		: image_size;
+
+	assert(required_size <= scratch.size);
+
+	texture = create_texture(device, allocator, header->dwWidth, header->dwHeight, 1, format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, mip_levels);
 
 	void* mapped = scratch.map();
-	memcpy(mapped, header + 1, image_size);
+	if (!is_compressed && header->ddspf.dwRGBBitCount == 24)
+	{
+		uint32_t src_data_start = sizeof(uint32_t) + sizeof(DDS_HEADER);
+		uint8_t* write_ptr = (uint8_t*)mapped;
+		for (uint32_t i = 0; i < image_size; i += 3)
+		{
+			*write_ptr++ = data[src_data_start + i + 0];
+			*write_ptr++ = data[src_data_start + i + 1];
+			*write_ptr++ = data[src_data_start + i + 2];
+			*write_ptr++ = 255;
+		}
+	}
+	else
+	{
+		memcpy(mapped, header + 1, image_size);
+	}
 	scratch.unmap();
 
 	vkResetCommandPool(device, command_pool, 0);
@@ -289,7 +376,7 @@ bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAlloca
 	VkDeviceSize offset = 0;
 	uint32_t width = header->dwWidth;
 	uint32_t height = header->dwHeight;
-	for (uint32_t i = 0; i < header->dwMipMapCount; ++i)
+	for (uint32_t i = 0; i < mip_levels; ++i)
 	{
 		VkBufferImageCopy copy{
 			.bufferOffset = offset,
@@ -305,7 +392,10 @@ bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAlloca
 
 		vkCmdCopyBufferToImage(command_buffer, scratch.buffer, texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 
-		offset += std::max(1u, (width + 3) / 4) * std::max(1u, (height + 3) / 4) * block_size;
+		offset += is_compressed 
+			?  (std::max(1u, (width + 3) / 4) * std::max(1u, (height + 3) / 4) * block_size)
+			: width * height * 4;
+
 		width = width > 1 ? (width >> 1) : 1;
 		height = height > 1 ? (height >> 1) : 1;
 	}

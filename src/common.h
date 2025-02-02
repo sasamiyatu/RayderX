@@ -1,7 +1,7 @@
 #pragma once
 
+#define VK_NO_PROTOTYPES
 #include "Volk/volk.h"
-#include "vma/vk_mem_alloc.h"
 
 #include <assert.h>
 #include <stdio.h>

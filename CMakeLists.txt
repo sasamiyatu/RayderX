@@ -14,11 +14,22 @@ file(GLOB_RECURSE CPP_SOURCE_FILES "src/*.h" "src/*.cpp")
 
 add_executable(rayderx
   ${CPP_SOURCE_FILES}
+  
   external/SPIRV-Reflect/spirv_reflect.h
   external/SPIRV-Reflect/spirv_reflect.c
-  )
+  
+  external/imgui/imgui.h
+  external/imgui/imgui.cpp
+  external/imgui/imgui_tables.cpp
+  external/imgui/imgui_widgets.cpp
+  external/imgui/imgui_draw.cpp
+  external/imgui/backends/imgui_impl_sdl2.h
+  external/imgui/backends/imgui_impl_sdl2.cpp
+  external/imgui/backends/imgui_impl_vulkan.h
+  external/imgui/backends/imgui_impl_vulkan.cpp
+)
 
-target_include_directories(rayderx PRIVATE external/SPIRV-Reflect)
+target_include_directories(rayderx PRIVATE external/SPIRV-Reflect external/imgui)
 
 target_link_libraries(rayderx
   PRIVATE
@@ -29,7 +40,14 @@ target_link_libraries(rayderx
 
 target_include_directories(rayderx PRIVATE external/cgltf)
 
-add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX)
+if (MSVC)
+  add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX)
+endif()
+
+#add_compile_definitions(
+#  IMGUI_IMPL_VULKAN_NO_PROTOTYPES
+#  VK_NO_PROTOTYPES
+#)
 
 set_target_properties(
     rayderx
