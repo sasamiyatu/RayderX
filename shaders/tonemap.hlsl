@@ -5,7 +5,7 @@
 #define TONEMAP_REINHARD 1
 #define TONEMAP_FILMIC 2
 
-#define TONEMAP_OPERATOR TONEMAP_LINEAR
+#define TONEMAP_OPERATOR TONEMAP_FILMIC
 
 [[vk::binding(0)]] RWTexture2D<float4> in_render_target;
 [[vk::binding(1)]] RWTexture2D<float4> out_render_target;

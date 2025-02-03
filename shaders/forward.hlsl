@@ -81,6 +81,7 @@ struct FSInput
 struct FSOutput
 {
     float4 color : SV_Target0;
+    float4 depth : SV_Target1;
 };
 
 float get_shadow(float3 world_pos, int i) 
@@ -127,6 +128,8 @@ float3 fresnel_schlick(float3 f0, float f90, float NdotS)
     return f0 + (f90 - f0) * pow(1.0f - NdotS, 5.0f);
 }
 
+// Kelemen and Szirmay-Kalos BRDF
+// [Advanced Techniques for Realistic Real-Time Skin Rendering, Chapter 14. GPU Gems 3, 2007]
 float specular_ksk(Texture2D beckmann_lut, SamplerState tex_sampler, float3 normal, float3 light, float3 view, float roughness, float fresnel_strength) {
     float3 half_vec = view + light;
     float3 H = normalize(half_vec);
@@ -149,7 +152,7 @@ float3 normal_map(Texture2D tex, SamplerState tex_sampler, float2 uv)
     normal.z = sqrt(1.0 - normal.x * normal.x - normal.y * normal.y);
     return normalize(normal);
 }
-
+    
 FSOutput fs_main(FSInput input)
 {
     FSOutput output = (FSOutput)0;
@@ -208,6 +211,7 @@ FSOutput fs_main(FSInput input)
     }
 
     output.color = float4(radiance, 1);
+    output.depth = 1.0 / input.position.w;
 
     return output;
 }

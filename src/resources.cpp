@@ -53,6 +53,21 @@ void pipeline_barrier(VkCommandBuffer command_buffer, std::initializer_list<VkMe
 	vkCmdPipelineBarrier2(command_buffer, &info);
 }
 
+void pipeline_barrier(VkCommandBuffer command_buffer, uint32_t memory_barrier_count, const VkMemoryBarrier2* memory_barriers, uint32_t image_barrier_count, const VkImageMemoryBarrier2* image_barriers)
+{
+	VkDependencyInfo info{
+		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+		.memoryBarrierCount = memory_barrier_count,
+		.pMemoryBarriers = memory_barriers,
+		.bufferMemoryBarrierCount = 0,
+		.pBufferMemoryBarriers = nullptr,
+		.imageMemoryBarrierCount = image_barrier_count,
+		.pImageMemoryBarriers = image_barriers
+	};
+
+	vkCmdPipelineBarrier2(command_buffer, &info);
+}
+
 Buffer create_buffer(VmaAllocator allocator, VkDeviceSize size, VkBufferUsageFlags usage, VmaAllocationCreateFlags allocation_flags, void* initial_data)
 {
 	VkBufferCreateInfo create_info{
@@ -129,7 +144,7 @@ VkImageView create_image_view(VkDevice device, VkImage image, VkImageViewType ty
 	return view;
 }
 
-Texture create_texture(VkDevice device, VmaAllocator allocator, uint32_t width, uint32_t height, uint32_t depth, VkFormat format, VkImageUsageFlags usage, uint32_t mip_levels)
+Texture create_texture(VkDevice device, VmaAllocator allocator, uint32_t width, uint32_t height, uint32_t depth, VkFormat format, VkImageUsageFlags usage, uint32_t mip_levels, VkSampleCountFlagBits sample_count)
 {
 	VkImageCreateInfo image_create_info{
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -138,7 +153,7 @@ Texture create_texture(VkDevice device, VmaAllocator allocator, uint32_t width, 
 		.extent = { width, height, depth },
 		.mipLevels = mip_levels,
 		.arrayLayers = 1,
-		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.samples = sample_count,
 		.tiling = VK_IMAGE_TILING_OPTIMAL,
 		.usage = usage,
 	};
