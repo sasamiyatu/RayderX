@@ -36,12 +36,14 @@ struct Texture
 	}
 };
 
+VkMemoryBarrier2 memory_barrier(VkPipelineStageFlags2 src_stage_mask, VkAccessFlags2 src_access_mask, VkPipelineStageFlags2 dst_stage_mask, VkAccessFlags2 dst_access_mask);
+
 VkImageMemoryBarrier2 image_barrier(VkImage image, 
 	VkPipelineStageFlags2 src_stage_mask, VkAccessFlags2 src_access_mask, VkImageLayout old_layout, 
 	VkPipelineStageFlags2 dst_stage_mask, VkAccessFlags2 dst_access_mask, VkImageLayout new_layout,
 	VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT);
 
-void pipeline_barrier(VkCommandBuffer command_buffer, std::initializer_list<VkImageMemoryBarrier2> image_barriers);
+void pipeline_barrier(VkCommandBuffer command_buffer, std::initializer_list<VkMemoryBarrier2> memory_barriers, std::initializer_list<VkImageMemoryBarrier2> image_barriers);
 
 Buffer create_buffer(VmaAllocator allocator, VkDeviceSize size, VkBufferUsageFlags usage, VmaAllocationCreateFlags allocation_flags = 0, void* initial_data = nullptr);
 VkImageView create_image_view(VkDevice device, VkImage image, VkImageViewType type, VkFormat format);

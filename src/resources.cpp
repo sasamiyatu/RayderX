@@ -2,6 +2,19 @@
 #include "dds.h"
 #include <filesystem>
 
+VkMemoryBarrier2 memory_barrier(VkPipelineStageFlags2 src_stage_mask, VkAccessFlags2 src_access_mask, VkPipelineStageFlags2 dst_stage_mask, VkAccessFlags2 dst_access_mask)
+{
+	VkMemoryBarrier2 barrier{
+		.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+		.srcStageMask = src_stage_mask,
+		.srcAccessMask = src_access_mask,
+		.dstStageMask = dst_stage_mask,
+		.dstAccessMask = dst_access_mask
+	};
+
+	return barrier;
+}
+
 VkImageMemoryBarrier2 image_barrier(VkImage image, VkPipelineStageFlags2 src_stage_mask, VkAccessFlags2 src_access_mask, VkImageLayout old_layout, VkPipelineStageFlags2 dst_stage_mask, VkAccessFlags2 dst_access_mask, VkImageLayout new_layout, VkImageAspectFlags aspect)
 {
 	VkImageMemoryBarrier2 barrier{
@@ -25,12 +38,12 @@ VkImageMemoryBarrier2 image_barrier(VkImage image, VkPipelineStageFlags2 src_sta
 	return barrier;
 }
 
-void pipeline_barrier(VkCommandBuffer command_buffer, std::initializer_list<VkImageMemoryBarrier2> image_barriers)
+void pipeline_barrier(VkCommandBuffer command_buffer, std::initializer_list<VkMemoryBarrier2> memory_barriers, std::initializer_list<VkImageMemoryBarrier2> image_barriers)
 {
 	VkDependencyInfo info{
 		.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-		.memoryBarrierCount = 0,
-		.pMemoryBarriers = nullptr,
+		.memoryBarrierCount = (uint32_t)memory_barriers.size(),
+		.pMemoryBarriers = memory_barriers.begin(),
 		.bufferMemoryBarrierCount = 0,
 		.pBufferMemoryBarriers = nullptr,
 		.imageMemoryBarrierCount = (uint32_t)image_barriers.size(),
@@ -370,7 +383,7 @@ bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAlloca
 			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			VK_IMAGE_ASPECT_COLOR_BIT);
 
-		pipeline_barrier(command_buffer, { barrier });
+		pipeline_barrier(command_buffer, {}, { barrier });
 	}
 
 	VkDeviceSize offset = 0;
@@ -406,7 +419,7 @@ bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAlloca
 			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 			VK_IMAGE_ASPECT_COLOR_BIT);
-		pipeline_barrier(command_buffer, { barrier });
+		pipeline_barrier(command_buffer, {}, { barrier });
 	}
 
 	VK_CHECK(vkEndCommandBuffer(command_buffer));

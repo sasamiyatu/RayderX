@@ -11,6 +11,8 @@
 
 #include "common.h"
 
+#include <glm/glm.hpp>
+
 struct ShaderCompiler
 {
 	CComPtr<IDxcUtils> dxc_utils;
@@ -28,6 +30,14 @@ struct Shader
 	uint32_t descriptor_counts[32];
 	uint32_t resource_mask;
 	size_t push_constants_size;
+
+	glm::uvec3 local_size;
+
+	inline glm::uvec3 get_dispatch_size(glm::uvec3 global_size) const { return (global_size + local_size - 1u) / local_size; }
+	inline glm::uvec3 get_dispatch_size(uint32_t global_size_x, uint32_t global_size_y, uint32_t global_size_z) const 
+	{ 
+		return (glm::uvec3(global_size_x, global_size_y, global_size_z) + local_size - 1u) / local_size;
+	}
 };
 
 

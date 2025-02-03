@@ -120,6 +120,14 @@ bool load_shader(Shader& shader, const ShaderCompiler& compiler, VkDevice device
 		}
 	}
 
+	auto entry_point_iter = std::find_if(mod.entry_points, mod.entry_points + mod.entry_point_count, [&](const SpvReflectEntryPoint& eps)
+		{
+			return eps.id == mod.entry_point_id;
+		});
+
+	assert(entry_point_iter != mod.entry_points + mod.entry_point_count);
+	shader.local_size = glm::uvec3(entry_point_iter->local_size.x, entry_point_iter->local_size.y, entry_point_iter->local_size.z);
+
 	if (mod.push_constant_block_count > 0)
 	{
 		const SpvReflectBlockVariable& block = mod.push_constant_blocks[0];

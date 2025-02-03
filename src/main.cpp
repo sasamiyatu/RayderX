@@ -29,6 +29,7 @@
 #include "shaders.h"
 
 static constexpr VkFormat DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
+static constexpr VkFormat RENDER_TARGET_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
 static constexpr uint32_t SHADOWMAP_SIZE = 2048;
 
 VkInstance create_instance()
@@ -259,7 +260,7 @@ VkFormat get_swapchain_format(VkPhysicalDevice physical_device, VkSurfaceKHR sur
 	VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &count, formats.data()));
 
 	for (uint32_t i = 0; i < count; ++i)
-		if (formats[i].format == VK_FORMAT_R8G8B8A8_SRGB || formats[i].format == VK_FORMAT_B8G8R8A8_SRGB)
+		if (formats[i].format == VK_FORMAT_R8G8B8A8_UNORM || formats[i].format == VK_FORMAT_B8G8R8A8_UNORM)
 			return formats[i].format;
 
 	return formats[0].format;
@@ -279,7 +280,7 @@ void create_swapchain(Swapchain& swapchain, VkDevice device, VkPhysicalDevice ph
 		.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
 		.imageExtent = { width, height },
 		.imageArrayLayers = 1,
-		.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
 		.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
 		.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
 		.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
@@ -676,19 +677,47 @@ VkDescriptorUpdateTemplate create_descriptor_update_template(VkDevice device, Vk
 		}
 	}
 
+	VkPipelineBindPoint bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	if (shaders.size() == 1 && shaders.begin()->stage == VK_SHADER_STAGE_COMPUTE_BIT)
+		bind_point = VK_PIPELINE_BIND_POINT_COMPUTE;
+
 	VkDescriptorUpdateTemplateCreateInfo create_info{
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_UPDATE_TEMPLATE_CREATE_INFO,
 		.descriptorUpdateEntryCount = (uint32_t)entries.size(),
 		.pDescriptorUpdateEntries = entries.data(),
 		.templateType = uses_push_descriptors ? VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_PUSH_DESCRIPTORS :  VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_DESCRIPTOR_SET,
 		.descriptorSetLayout = layout,
-		.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+		.pipelineBindPoint = bind_point,
 		.pipelineLayout = pipeline_layout,
 	};
 
 	VkDescriptorUpdateTemplate update_template = VK_NULL_HANDLE;
 	VK_CHECK(vkCreateDescriptorUpdateTemplate(device, &create_info, nullptr, &update_template));
 	return update_template;
+}
+
+VkPipeline create_compute_pipeline(VkDevice device, const Shader& shader, VkPipelineLayout layout)
+{
+	VkShaderModuleCreateInfo module_info{
+		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+		.codeSize = shader.spirv.size(),
+		.pCode = (uint32_t*)shader.spirv.data(),
+	};
+
+	VkComputePipelineCreateInfo create_info{
+		.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+		.stage = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.pNext = &module_info,
+			.stage = shader.stage,
+			.pName = shader.entry_point.c_str()
+		},
+		.layout = layout
+	};
+
+	VkPipeline pipeline = 0;
+	VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &create_info, nullptr, &pipeline));
+	return pipeline;
 }
 
 bool init_imgui(SDL_Window* window, VkInstance instance, VkPhysicalDevice physical_device, VkDevice device, uint32_t queue_family, VkQueue queue, uint32_t min_image_count, uint32_t image_count, VkFormat format)
@@ -1126,7 +1155,7 @@ int main(int argc, char** argv)
 		VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT);
 	VkPipelineLayout pipeline_layout = create_pipeline_layout(device, {descriptor_set_layout}, {vertex_shader, fragment_shader});
 	VkDescriptorUpdateTemplate update_template = create_descriptor_update_template(device, descriptor_set_layout, pipeline_layout, { vertex_shader, fragment_shader }, true);
-	VkPipeline pipeline = create_pipeline(device, { vertex_shader, fragment_shader }, pipeline_layout, {swapchain.format}, DEPTH_FORMAT);
+	VkPipeline pipeline = create_pipeline(device, { vertex_shader, fragment_shader }, pipeline_layout, {RENDER_TARGET_FORMAT}, DEPTH_FORMAT);
 
 	Shader shadowmap_vertex_shader{};
 	FAIL_ON_ERROR(load_shader(shadowmap_vertex_shader, compiler, device, "shadowmap.hlsl", "vs_main", VK_SHADER_STAGE_VERTEX_BIT));
@@ -1137,7 +1166,18 @@ int main(int argc, char** argv)
 		{ shadowmap_vertex_shader }, true);
 	VkPipeline shadowmap_pipeline = create_shadowmap_pipeline(device, { shadowmap_vertex_shader }, shadowmap_pipeline_layout, DEPTH_FORMAT);
 
+	Shader tonemap_shader{};
+	FAIL_ON_ERROR(load_shader(tonemap_shader, compiler, device, "tonemap.hlsl", "tonemap", VK_SHADER_STAGE_COMPUTE_BIT));
+	VkDescriptorSetLayout tonemap_descriptor_set_layout = create_descriptor_set_layout(device, get_descriptor_set_layout_binding({ tonemap_shader }),
+		VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT);
+	VkPipelineLayout tonemap_pipeline_layout = create_pipeline_layout(device, { tonemap_descriptor_set_layout }, { tonemap_shader });
+	VkDescriptorUpdateTemplate tonemap_update_template = create_descriptor_update_template(device, tonemap_descriptor_set_layout, tonemap_pipeline_layout,
+		{ tonemap_shader }, true);
+	VkPipeline tonemap_pipeline = create_compute_pipeline(device, tonemap_shader, tonemap_pipeline_layout);
+
 	Texture depth_texture = create_texture(device, allocator, swapchain.width, swapchain.height, 1, DEPTH_FORMAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+	Texture main_render_target = create_texture(device, allocator, swapchain.width, swapchain.height, 1, RENDER_TARGET_FORMAT,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
 
 	VkSampler anisotropic_sampler = VK_NULL_HANDLE;
 	VkSampler linear_sampler = VK_NULL_HANDLE;
@@ -1201,37 +1241,16 @@ int main(int argc, char** argv)
 		VK_CHECK(vkBeginCommandBuffer(command_buffer, &begin_info));
 
 		{
-			VkImageMemoryBarrier2 image_memory_barrier{
-				.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-				.pNext = nullptr,
-				.srcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-				.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-				.dstStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
-				.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-				.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-				.newLayout = VK_IMAGE_LAYOUT_GENERAL,
-				.image = swapchain.images[image_index],
-				.subresourceRange{
-					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-					.baseMipLevel = 0,
-					.levelCount = 1,
-					.baseArrayLayer = 0,
-					.layerCount = 1
-				}
+			VkImageMemoryBarrier2 barriers[] = {
+				image_barrier(swapchain.images[image_index],
+					VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+					VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL),
+				image_barrier(main_render_target.image,
+					VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+					VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL),
 			};
 
-			VkDependencyInfo dependency_info{
-				.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-				.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
-				.memoryBarrierCount = 0,
-				.pMemoryBarriers = nullptr,
-				.bufferMemoryBarrierCount = 0,
-				.pBufferMemoryBarriers = nullptr,
-				.imageMemoryBarrierCount = 1,
-				.pImageMemoryBarriers = &image_memory_barrier
-			};
-
-			vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+			pipeline_barrier(command_buffer, {}, { barriers[0], barriers[1] });
 		}
 
 		for (const auto& l : lights.lights)
@@ -1241,7 +1260,7 @@ int main(int argc, char** argv)
 				VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT, VK_IMAGE_LAYOUT_GENERAL,
 				VK_IMAGE_ASPECT_DEPTH_BIT);
 
-			pipeline_barrier(command_buffer, { barrier });
+			pipeline_barrier(command_buffer, {}, { barrier });
 
 			// Shadow maps
 			VkRenderingAttachmentInfo depth_info{
@@ -1293,12 +1312,13 @@ int main(int argc, char** argv)
 			{
 				struct {
 					glm::mat4 mvp;
+					float far_plane;
 				} pc;
 
 				/**
- * This is for rendering linear values:
- * Check this: http://www.mvps.org/directx/articles/linear_z/linearz.htm
- */
+					 * This is for rendering linear values:
+					 * Check this: http://www.mvps.org/directx/articles/linear_z/linearz.htm
+				*/
 				/*
 				D3DXMATRIX linearProjection = projection;
 				float Q = projection._33;
@@ -1307,14 +1327,8 @@ int main(int argc, char** argv)
 				linearProjection._33 /= F;
 				linearProjection._43 /= F;
 				*/
-
-				glm::mat4 linear_proj = proj;
-				float Q = proj[2][2];
-				float N = -proj[2][3] / Q;
-				float F = -N * Q / (1.0f - Q);
-				linear_proj[2][2] /= F;	
-				linear_proj[2][3] /= F;
 				pc.mvp = l.orbit_camera.projection * l.orbit_camera.compute_view() * d.transform;
+				pc.far_plane = l.orbit_camera.far_plane;
 
 				vkCmdPushConstants(command_buffer, shadowmap_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
 
@@ -1327,7 +1341,7 @@ int main(int argc, char** argv)
 
 		VkRenderingAttachmentInfo attachment_info{
 			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-			.imageView = views[image_index],
+			.imageView = main_render_target.view,
 			.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
 			.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
 			.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -1421,12 +1435,35 @@ int main(int argc, char** argv)
 
 		vkCmdEndRendering(command_buffer);
 
+		{ // Do tonemap
+			VkMemoryBarrier2 barrier = memory_barrier(VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+				VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT);
+
+			pipeline_barrier(command_buffer, { barrier }, {});
+
+			struct {
+				float exposure = 1.0f;
+			} pc;
+
+			DescriptorInfo descriptor_info[] = {
+				DescriptorInfo(main_render_target.view, VK_IMAGE_LAYOUT_GENERAL),
+				DescriptorInfo(views[image_index], VK_IMAGE_LAYOUT_GENERAL),
+			};
+
+			glm::uvec3 dispatch_size = tonemap_shader.get_dispatch_size(swapchain.width, swapchain.height, 1);
+
+			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, tonemap_pipeline);
+			vkCmdPushConstants(command_buffer, tonemap_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+			vkCmdPushDescriptorSetWithTemplateKHR(command_buffer, tonemap_update_template, tonemap_pipeline_layout, 0, descriptor_info);
+			vkCmdDispatch(command_buffer, dispatch_size.x, dispatch_size.y, dispatch_size.z);
+		}
+
 		{
 			VkImageMemoryBarrier2 barrier = image_barrier(swapchain.images[image_index], 
-				VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL,
 				VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_ACCESS_2_MEMORY_READ_BIT, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
-			pipeline_barrier(command_buffer, { barrier }	);
+			pipeline_barrier(command_buffer, {}, { barrier });
 		}
 
 		VK_CHECK(vkEndCommandBuffer(command_buffer));
@@ -1477,14 +1514,19 @@ int main(int argc, char** argv)
 	vertex_buffer.destroy();
 	index_buffer.destroy();
 	depth_texture.destroy();
+	main_render_target.destroy();
 	vkDestroyDescriptorUpdateTemplate(device, update_template, nullptr);
 	vkDestroyDescriptorUpdateTemplate(device, shadowmap_update_template, nullptr);
+	vkDestroyDescriptorUpdateTemplate(device, tonemap_update_template, nullptr);
 	vkDestroyDescriptorSetLayout(device, descriptor_set_layout, nullptr);
 	vkDestroyDescriptorSetLayout(device, shadowmap_descriptor_set_layout, nullptr);
+	vkDestroyDescriptorSetLayout(device, tonemap_descriptor_set_layout, nullptr);
 	vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
 	vkDestroyPipelineLayout(device, shadowmap_pipeline_layout, nullptr);
+	vkDestroyPipelineLayout(device, tonemap_pipeline_layout, nullptr);
 	vkDestroyPipeline(device, pipeline, nullptr);
 	vkDestroyPipeline(device, shadowmap_pipeline, nullptr);
+	vkDestroyPipeline(device, tonemap_pipeline , nullptr);
 	vkDestroyCommandPool(device, command_pool, nullptr);
 	for (VkImageView view : views) vkDestroyImageView(device, view, nullptr);
 	vkDestroySwapchainKHR(device, swapchain.swapchain, nullptr);
