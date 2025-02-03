@@ -43,6 +43,7 @@ struct Light {
 [[vk::binding(8)]] StructuredBuffer<Light> lights;
 [[vk::binding(9)]] SamplerComparisonState shadow_sampler;
 [[vk::binding(10)]] Texture2D shadowmaps[5];
+[[vk::binding(11)]] TextureCube irradiance_texture;
 
 #include "separable_sss.h"
 
@@ -53,6 +54,7 @@ struct PushConstants
     float3 camera_pos;
     float translucency;
     float sss_width;
+    float ambient;
 };
 
 [[vk::push_constant]]
@@ -153,6 +155,12 @@ float3 normal_map(Texture2D tex, SamplerState tex_sampler, float2 uv)
     normal.z = sqrt(1.0 - normal.x * normal.x - normal.y * normal.y);
     return normalize(normal);
 }
+
+float4 sample_cubemap(TextureCube cubemap, float3 dir)
+{
+    dir.z = -dir.z;
+    return cubemap.Sample(LinearSampler, dir);
+}
     
 FSOutput fs_main(FSInput input)
 {
@@ -179,6 +187,7 @@ FSOutput fs_main(FSInput input)
 
     float intensity = specular_ao.r * specular_intensity;
     float roughness = (specular_ao.g / 0.3) * specular_roughness;
+    float occlusion = specular_ao.b;
 
     float3 radiance = 0;
 
@@ -214,6 +223,8 @@ FSOutput fs_main(FSInput input)
                 light, shadowmaps[i], lights[i].view_projection, lights[i].far_plane);
         }
     }
+
+    radiance += push_constants.ambient * occlusion * basecolor.rgb * saturate(sample_cubemap(irradiance_texture, normal).rgb);
 
     output.color = float4(radiance, basecolor.a);
     output.depth = 1.0 / input.position.w;

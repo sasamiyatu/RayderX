@@ -407,25 +407,29 @@ float4 SSSSBlurPS(
 
     // Accumulate the center sample:
     float4 colorBlurred = colorM;
-    colorBlurred.rgb *= kernel[0].rgb;
 
-    // Accumulate the other samples:
-    SSSS_UNROLL
-    for (int i = 1; i < SSSS_N_SAMPLES; i++) {
-        // Fetch color and depth for current sample:
-        float2 offset = texcoord + kernel[i].a * finalStep;
-        float4 color = SSSSSample(colorTex, offset);
+    if (SSSS_STREGTH_SOURCE != 0.0f)
+    {
+        colorBlurred.rgb *= kernel[0].rgb;
 
-        #if SSSS_FOLLOW_SURFACE == 1
-        // If the difference in depth is huge, we lerp color back to "colorM":
-        float depth = SSSSSample(depthTex, offset).r;
-        float s = SSSSSaturate(300.0f * distanceToProjectionWindow *
-                               sssWidth * abs(depthM - depth));
-        color.rgb = SSSSLerp(color.rgb, colorM.rgb, s);
-        #endif
+        // Accumulate the other samples:
+        SSSS_UNROLL
+        for (int i = 1; i < SSSS_N_SAMPLES; i++) {
+            // Fetch color and depth for current sample:
+            float2 offset = texcoord + kernel[i].a * finalStep;
+            float4 color = SSSSSample(colorTex, offset);
 
-        // Accumulate:
-        colorBlurred.rgb += kernel[i].rgb * color.rgb;
+            #if SSSS_FOLLOW_SURFACE == 1
+            // If the difference in depth is huge, we lerp color back to "colorM":
+            float depth = SSSSSample(depthTex, offset).r;
+            float s = SSSSSaturate(300.0f * distanceToProjectionWindow *
+                                sssWidth * abs(depthM - depth));
+            color.rgb = SSSSLerp(color.rgb, colorM.rgb, s);
+            #endif
+
+            // Accumulate:
+            colorBlurred.rgb += kernel[i].rgb * color.rgb;
+        }
     }
 
     return colorBlurred;

@@ -40,6 +40,14 @@ struct Shader
 	}
 };
 
+struct Program
+{
+	std::vector<Shader> shaders;
+
+	VkDescriptorSetLayout descriptor_set_layout;
+	VkPipelineLayout pipeline_layout;
+	VkDescriptorUpdateTemplate descriptor_update_template;
+};
 
 struct DescriptorInfo
 {
@@ -87,5 +95,11 @@ struct DescriptorInfo
 	}
 };
 
+VkDescriptorSetLayout create_descriptor_set_layout(VkDevice device, const std::vector<VkDescriptorSetLayoutBinding>& bindings, VkDescriptorSetLayoutCreateFlags flags = 0);
+std::vector<VkDescriptorSetLayoutBinding> get_descriptor_set_layout_binding(std::initializer_list<Shader> shaders);
+VkPipelineLayout create_pipeline_layout(VkDevice device, std::initializer_list<VkDescriptorSetLayout> set_layouts = {}, std::initializer_list<Shader> shaders = {});
+VkDescriptorUpdateTemplate create_descriptor_update_template(VkDevice device, VkDescriptorSetLayout layout, VkPipelineLayout pipeline_layout, std::initializer_list<Shader> shaders, bool uses_push_descriptors = false);
 bool create_shader_compiler(ShaderCompiler& compiler);
 bool load_shader(Shader& shader, const ShaderCompiler& compiler, VkDevice device, const char* filepath, const char* entry_point, VkShaderStageFlagBits shader_stage);
+Program create_program(VkDevice device, std::initializer_list<Shader> shaders, bool use_push_descriptors);
+void destroy_program(VkDevice device, Program& program);

@@ -138,3 +138,176 @@ bool load_shader(Shader& shader, const ShaderCompiler& compiler, VkDevice device
 
 	return true;
 }
+
+
+VkDescriptorSetLayout create_descriptor_set_layout(VkDevice device, const std::vector<VkDescriptorSetLayoutBinding>& bindings, VkDescriptorSetLayoutCreateFlags flags)
+{
+	VkDescriptorSetLayoutCreateInfo create_info{
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.flags = flags,
+		.bindingCount = (uint32_t)bindings.size(),
+		.pBindings = bindings.data(),
+	};
+
+	VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+	VK_CHECK(vkCreateDescriptorSetLayout(device, &create_info, nullptr, &layout));
+	return layout;
+}
+
+std::vector<VkDescriptorSetLayoutBinding> get_descriptor_set_layout_binding(std::initializer_list<Shader> shaders)
+{
+	VkDescriptorType resources[32] = {};
+	uint32_t descriptor_counts[32] = {};
+	uint32_t resource_mask = 0;
+	VkShaderStageFlags stage_flags = 0;
+
+	for (const Shader& shader : shaders)
+	{
+		stage_flags |= shader.stage;
+		for (uint32_t i = 0; i < 32; ++i)
+		{
+			if (shader.resource_mask & (1 << i))
+			{
+				resource_mask |= (1 << i);
+				descriptor_counts[i] = shader.descriptor_counts[i];
+				resources[i] = shader.descriptor_types[i];
+			}
+		}
+	}
+
+	std::vector<VkDescriptorSetLayoutBinding> bindings;
+
+	for (uint32_t i = 0; i < 32; ++i)
+	{
+		if (resource_mask & (1 << i))
+		{
+			VkDescriptorSetLayoutBinding binding{
+				.binding = i,
+				.descriptorType = resources[i],
+				.descriptorCount = descriptor_counts[i],
+				.stageFlags = stage_flags,
+				.pImmutableSamplers = nullptr
+			};
+			bindings.push_back(binding);
+		}
+	}
+
+	return bindings;
+}
+
+VkPipelineLayout create_pipeline_layout(VkDevice device, std::initializer_list<VkDescriptorSetLayout> set_layouts, std::initializer_list<Shader> shaders)
+{
+	uint32_t push_constant_size = 0;
+	VkShaderStageFlags push_constant_stages = 0;
+
+	for (const auto& s : shaders)
+	{
+		push_constant_size = std::max(push_constant_size, (uint32_t)s.push_constants_size);
+		push_constant_stages |= s.stage;
+	}
+
+	VkPushConstantRange range{
+		.stageFlags = push_constant_stages,
+		.offset = 0,
+		.size = push_constant_size
+	};
+
+	VkPipelineLayoutCreateInfo create_info{
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+		.setLayoutCount = (uint32_t)set_layouts.size(),
+		.pSetLayouts = set_layouts.begin(),
+		.pushConstantRangeCount = push_constant_size != 0 ? 1u : 0u,
+		.pPushConstantRanges = push_constant_size != 0 ? &range : nullptr
+	};
+
+	VkPipelineLayout layout = VK_NULL_HANDLE;
+	VK_CHECK(vkCreatePipelineLayout(device, &create_info, nullptr, &layout));
+
+	return layout;
+}
+
+
+VkDescriptorUpdateTemplate create_descriptor_update_template(VkDevice device, VkDescriptorSetLayout layout, VkPipelineLayout pipeline_layout, std::initializer_list<Shader> shaders, bool uses_push_descriptors)
+{
+	uint32_t resource_mask = 0;
+	VkDescriptorType descriptor_types[32] = {};
+	uint32_t descriptor_counts[32] = {};
+	for (const auto& shader : shaders)
+	{
+		for (uint32_t i = 0; i < 32; ++i)
+		{
+			if (shader.resource_mask & (1 << i))
+			{
+				resource_mask |= (1 << i);
+				descriptor_types[i] = shader.descriptor_types[i];
+				descriptor_counts[i] = shader.descriptor_counts[i];
+			}
+		}
+	}
+
+	std::vector<VkDescriptorUpdateTemplateEntry> entries;
+
+	uint32_t offset = 0;
+	for (uint32_t i = 0; i < 32; ++i)
+	{
+		if (resource_mask & (1 << i))
+		{
+			uint32_t stride = sizeof(DescriptorInfo);
+
+			for (uint32_t j = 0; j < descriptor_counts[i]; ++j)
+			{
+				VkDescriptorUpdateTemplateEntry entry{
+					.dstBinding = i,
+					.dstArrayElement = j,
+					.descriptorCount = 1,
+					.descriptorType = descriptor_types[i],
+					.offset = offset,
+					.stride = stride,
+				};
+				entries.push_back(entry);
+				offset += stride;
+			}
+		}
+	}
+
+	VkPipelineBindPoint bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	if (shaders.size() == 1 && shaders.begin()->stage == VK_SHADER_STAGE_COMPUTE_BIT)
+		bind_point = VK_PIPELINE_BIND_POINT_COMPUTE;
+
+	VkDescriptorUpdateTemplateCreateInfo create_info{
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_UPDATE_TEMPLATE_CREATE_INFO,
+		.descriptorUpdateEntryCount = (uint32_t)entries.size(),
+		.pDescriptorUpdateEntries = entries.data(),
+		.templateType = uses_push_descriptors ? VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_PUSH_DESCRIPTORS : VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_DESCRIPTOR_SET,
+		.descriptorSetLayout = layout,
+		.pipelineBindPoint = bind_point,
+		.pipelineLayout = pipeline_layout,
+	};
+
+	if (entries.size() == 0) return VK_NULL_HANDLE;
+
+	VkDescriptorUpdateTemplate update_template = VK_NULL_HANDLE;
+	VK_CHECK(vkCreateDescriptorUpdateTemplate(device, &create_info, nullptr, &update_template));
+	return update_template;
+}
+
+Program create_program(VkDevice device, std::initializer_list<Shader> shaders, bool use_push_descriptors)
+{
+	VkDescriptorSetLayout descriptor_set_layout = create_descriptor_set_layout(device, get_descriptor_set_layout_binding(shaders),
+		use_push_descriptors ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT : 0);
+	VkPipelineLayout pipeline_layout = create_pipeline_layout(device, { descriptor_set_layout }, shaders);
+	VkDescriptorUpdateTemplate update_template = create_descriptor_update_template(device, descriptor_set_layout, pipeline_layout, shaders, use_push_descriptors);
+	return {
+		.shaders = shaders,
+		.descriptor_set_layout = descriptor_set_layout,
+		.pipeline_layout = pipeline_layout,
+		.descriptor_update_template	= update_template
+	};
+}
+
+void destroy_program(VkDevice device, Program& program)
+{
+	vkDestroyDescriptorSetLayout(device, program.descriptor_set_layout, nullptr);
+	vkDestroyPipelineLayout(device, program.pipeline_layout, nullptr);
+	vkDestroyDescriptorUpdateTemplate(device, program.descriptor_update_template, nullptr);	
+}

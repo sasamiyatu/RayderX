@@ -21,7 +21,6 @@ struct Vertex
 struct PushConstants
 {
     float4x4 mvp;
-    float far_plane;
 };
 
 [[vk::push_constant]]
@@ -33,7 +32,7 @@ VSOutput vs_main(VSInput input)
 
     Vertex v = vertex_buffer[input.vertex_id];
     float4 position = mul(push_constants.mvp, float4(v.position, 1.0f));
-    position.z = position.z * position.w / push_constants.far_plane; // Linearize
+    position.z = position.z * position.w; // Linear output to mitigate shadow map artifacts
     output.position = position;
 
     return output;

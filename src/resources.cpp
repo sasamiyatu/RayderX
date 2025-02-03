@@ -135,7 +135,7 @@ VkImageView create_image_view(VkDevice device, VkImage image, VkImageViewType ty
 			.baseMipLevel = 0,
 			.levelCount = VK_REMAINING_MIP_LEVELS,
 			.baseArrayLayer = 0,
-			.layerCount = 1,
+			.layerCount = VK_REMAINING_ARRAY_LAYERS,
 		}
 	};
 
@@ -144,15 +144,17 @@ VkImageView create_image_view(VkDevice device, VkImage image, VkImageViewType ty
 	return view;
 }
 
-Texture create_texture(VkDevice device, VmaAllocator allocator, uint32_t width, uint32_t height, uint32_t depth, VkFormat format, VkImageUsageFlags usage, uint32_t mip_levels, VkSampleCountFlagBits sample_count)
+Texture create_texture(VkDevice device, VmaAllocator allocator, uint32_t width, uint32_t height, uint32_t depth, VkFormat format, VkImageUsageFlags usage, uint32_t mip_levels, VkSampleCountFlagBits sample_count, uint32_t array_layers, bool is_cubemap)
 {
+	VkImageCreateFlags flags = is_cubemap ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
 	VkImageCreateInfo image_create_info{
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.flags = flags,
 		.imageType = VK_IMAGE_TYPE_2D,
 		.format = format,
 		.extent = { width, height, depth },
 		.mipLevels = mip_levels,
-		.arrayLayers = 1,
+		.arrayLayers = array_layers,
 		.samples = sample_count,
 		.tiling = VK_IMAGE_TILING_OPTIMAL,
 		.usage = usage,
@@ -166,14 +168,17 @@ Texture create_texture(VkDevice device, VmaAllocator allocator, uint32_t width, 
 	VmaAllocation allocation = VK_NULL_HANDLE;
 	VK_CHECK(vmaCreateImage(allocator, &image_create_info, &allocation_info, &image, &allocation, nullptr));
 
-	VkImageView view = create_image_view(device, image, VK_IMAGE_VIEW_TYPE_2D, format);
+	VkImageViewType view_type = is_cubemap ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D;
+	VkImageView view = create_image_view(device, image, view_type, format);
 
 	return {
 		.image = image,
 		.view = view,
 		.allocation = allocation,
 		.allocator = allocator,
-		.device = device
+		.device = device,
+		.width = width,
+		.height = height
 	};
 }
 
@@ -198,6 +203,10 @@ static VkFormat get_format(const DDS_HEADER* header, bool srgb)
 			return srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
 		case fourcc("ATI2"):
 			return VK_FORMAT_BC5_UNORM_BLOCK;
+		case 113:
+			return VK_FORMAT_R16G16B16A16_SFLOAT;
+		case 116:
+			return VK_FORMAT_R32G32B32A32_SFLOAT;
 		default:
 		{
 			char tmp[5] = {};
@@ -303,6 +312,19 @@ static bool is_compressed_format(VkFormat format)
 	}
 }
 
+static uint32_t get_format_bitcount(VkFormat format)
+{
+	switch (format)
+	{
+	case VK_FORMAT_R32G32B32A32_SFLOAT:
+		return 128;
+	case VK_FORMAT_R16G16B16A16_SFLOAT:
+		return 64;
+	default:
+		return 0;
+	}
+}
+
 bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAllocator allocator, VkCommandPool command_pool, VkCommandBuffer command_buffer, VkQueue queue, const Buffer& scratch, bool is_srgb)
 {
 	std::filesystem::path p = path;
@@ -337,6 +359,19 @@ bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAlloca
 		return false;
 	}
 
+	bool is_cubemap = header->dwCaps & DDSCAPS_COMPLEX && header->dwCaps2 & DDSCAPS2_CUBEMAP;
+	if (is_cubemap)
+	{
+		assert(header->dwCaps2 & DDSCAPS2_CUBEMAP_POSITIVEX);
+		assert(header->dwCaps2 & DDSCAPS2_CUBEMAP_NEGATIVEX);
+		assert(header->dwCaps2 & DDSCAPS2_CUBEMAP_POSITIVEY);
+		assert(header->dwCaps2 & DDSCAPS2_CUBEMAP_NEGATIVEY);
+		assert(header->dwCaps2 & DDSCAPS2_CUBEMAP_POSITIVEZ);
+		assert(header->dwCaps2 & DDSCAPS2_CUBEMAP_NEGATIVEZ);
+	}
+
+	size_t file_image_size = data.size() - sizeof(uint32_t) - sizeof(DDS_HEADER);
+
 	VkFormat format = get_format(header, is_srgb);
 	if (format == VK_FORMAT_UNDEFINED)
 	{
@@ -351,22 +386,27 @@ bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAlloca
 
 	uint32_t mip_levels = header->dwMipMapCount == 0 ? 1 : header->dwMipMapCount;
 
+	uint32_t rgb_bit_count = header->ddspf.dwRGBBitCount != 0 ? header->ddspf.dwRGBBitCount : get_format_bitcount(format);
+
 	size_t image_size = is_compressed
 		? get_image_size_bc(header->dwWidth, header->dwHeight, mip_levels, (uint32_t)block_size)
-		: get_image_size(header->dwWidth, header->dwHeight, mip_levels, header->ddspf.dwRGBBitCount);
-	size_t file_image_size = data.size() - sizeof(uint32_t) - sizeof(DDS_HEADER);
+		: get_image_size(header->dwWidth, header->dwHeight, mip_levels, rgb_bit_count);
+
+	if (is_cubemap) image_size *= 6;
 	assert(image_size == file_image_size);
 
-	size_t required_size = !is_compressed && header->ddspf.dwRGBBitCount == 24
+	size_t required_size = !is_compressed && rgb_bit_count == 24
 		? get_image_size(header->dwWidth, header->dwHeight, mip_levels, 32)
 		: image_size;
 
 	assert(required_size <= scratch.size);
 
-	texture = create_texture(device, allocator, header->dwWidth, header->dwHeight, 1, format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, mip_levels);
+	uint32_t array_layers = is_cubemap ? 6 : 1;
+
+	texture = create_texture(device, allocator, header->dwWidth, header->dwHeight, 1, format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, mip_levels, VK_SAMPLE_COUNT_1_BIT, array_layers, is_cubemap);
 
 	void* mapped = scratch.map();
-	if (!is_compressed && header->ddspf.dwRGBBitCount == 24)
+	if (!is_compressed && rgb_bit_count == 24)
 	{
 		uint32_t src_data_start = sizeof(uint32_t) + sizeof(DDS_HEADER);
 		uint8_t* write_ptr = (uint8_t*)mapped;
@@ -412,7 +452,7 @@ bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAlloca
 				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
 				.mipLevel = i,
 				.baseArrayLayer = 0,
-				.layerCount = 1
+				.layerCount = array_layers
 			},
 			.imageOffset = {0, 0, 0 },
 			.imageExtent = {width, height, 1}
@@ -422,7 +462,7 @@ bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAlloca
 
 		offset += is_compressed 
 			?  (std::max(1u, (width + 3) / 4) * std::max(1u, (height + 3) / 4) * block_size)
-			: width * height * 4;
+			: width * height * (rgb_bit_count / 8) * array_layers;
 
 		width = width > 1 ? (width >> 1) : 1;
 		height = height > 1 ? (height >> 1) : 1;

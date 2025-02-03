@@ -20,6 +20,18 @@
 #define DDSD_LINEARSIZE	0x80000 // Required when pitch is provided for a compressed texture.
 #define DDSD_DEPTH 0x800000 // Required in a depth texture.
 
+#define DDSCAPS_COMPLEX	0x8			//	Optional; must be used on any file that contains more than one surface(a mipmap, a cubic environment map, or mipmapped volume texture).	0x8
+#define DDSCAPS_MIPMAP	0x400000	//	Optional; should be used for a mipmap.	0x400000
+#define DDSCAPS_TEXTURE	0x1000		//	Required	0x1000
+
+#define DDSCAPS2_CUBEMAP 0x200 // Required for a cube map.	
+#define DDSCAPS2_CUBEMAP_POSITIVEX 0x400 // Required when these surfaces are stored in a cube map.	
+#define DDSCAPS2_CUBEMAP_NEGATIVEX 0x800 // Required when these surfaces are stored in a cube map.	
+#define DDSCAPS2_CUBEMAP_POSITIVEY 0x1000 // Required when these surfaces are stored in a cube map.	
+#define DDSCAPS2_CUBEMAP_NEGATIVEY 0x2000 // Required when these surfaces are stored in a cube map.	
+#define DDSCAPS2_CUBEMAP_POSITIVEZ 0x4000 // Required when these surfaces are stored in a cube map.	
+#define DDSCAPS2_CUBEMAP_NEGATIVEZ 0x8000 // Required when these surfaces are stored in a cube map.	
+#define DDSCAPS2_VOLUME 0x200000 // Required for a volume texture.	
 
 struct DDS_PIXELFORMAT {
   DWORD dwSize;
