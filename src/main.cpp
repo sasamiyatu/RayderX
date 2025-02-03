@@ -34,6 +34,8 @@ static constexpr VkFormat LINEAR_DEPTH_FORMAT = VK_FORMAT_R32_SFLOAT;
 static constexpr VkFormat RENDER_TARGET_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
 static constexpr uint32_t SHADOWMAP_SIZE = 2048;
 static constexpr VkSampleCountFlagBits MSAA = VK_SAMPLE_COUNT_4_BIT;
+static constexpr float SSS_TRANSLUCENCY = 0.83f;
+static constexpr float SSS_WIDTH = 0.012f;
 
 VkInstance create_instance()
 {
@@ -762,10 +764,11 @@ struct OrbitCamera
 {
 	float distance = 2.0f;
 	float fov = glm::radians(45.0f);
+	float near_plane = 0.1f;
 	float far_plane = 10.0f;
 	glm::vec2 angles = glm::vec2(0.0f, 0.0f);
 	glm::vec2 pan_pos = glm::vec2(0.0f, 0.0f);
-	glm::mat4 projection = glm::perspectiveRH_ZO(fov, 1280.0f / 720.0f, 1.0f, far_plane);
+	glm::mat4 projection = glm::perspectiveRH_ZO(fov, 1280.0f / 720.0f, near_plane, far_plane);
 
 	glm::mat4 compute_view() const
 	{
@@ -1041,8 +1044,8 @@ int main(int argc, char** argv)
 
 	// Defaults from Jorge's demo
 	Lights lights{};
-	glm::mat4 shadowmap_projection = glm::perspectiveRH_ZO(glm::radians(45.0f), 1.0f, 0.1f, 100.0f);
-	float shadow_bias = -0.034f;
+	glm::mat4 shadowmap_projection = glm::perspectiveRH_ZO(glm::radians(45.0f), 1.0f, 0.1f, 10.0f);
+	float shadow_bias = -0.01f;
 	lights.lights = {
 		{
 			.orbit_camera = {
@@ -1125,6 +1128,9 @@ int main(int argc, char** argv)
 		glm::vec3 dir = inverse_view[2];
 		printf("%zu, pos: (%f %f %f), dir: (%f %f %f)\n", i, pos.x, pos.y, pos.z, dir.x, dir.y, dir.z);
 		const auto& l = lights.lights[i];
+		glm::mat4 texture_scale = glm::scale(glm::mat4(1.0f), glm::vec3(0.5f, -0.5f, 1.0f));
+		glm::mat4 texture_translate = glm::translate(glm::mat4(1.0f), glm::vec3(0.5f, 0.5f, 0.0f));
+		glm::mat4 texture_transform = texture_translate * texture_scale;
 		GPULight gpu_light{
 			.position = pos,
 			.direction = dir,
@@ -1134,7 +1140,7 @@ int main(int argc, char** argv)
 			.attenuation = l.attenuation,
 			.far_plane = l.orbit_camera.far_plane,
 			.bias = l.bias,
-			.view_projection = glm::perspectiveRH_ZO(l.orbit_camera.fov, 1.0f, 0.1f, l.orbit_camera.far_plane) * view,
+			.view_projection = texture_transform * glm::perspectiveRH_ZO(l.orbit_camera.fov, 1.0f, 0.1f, l.orbit_camera.far_plane) * view,
 		};
 		lights.gpu_lights[i] = gpu_light;
 	}
@@ -1268,7 +1274,7 @@ int main(int argc, char** argv)
 		};
 		VK_CHECK(vkBeginCommandBuffer(command_buffer, &begin_info));
 
-		{
+		{ // Change image layouts
 			VkImageMemoryBarrier2 barriers[] = {
 				image_barrier(swapchain.images[image_index],
 					VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1296,9 +1302,10 @@ int main(int argc, char** argv)
 			pipeline_barrier(command_buffer, 0, nullptr, (uint32_t)std::size(barriers), barriers);
 		}
 
-		for (const auto& l : lights.lights)
+		for (size_t i = 0; i < lights.lights.size(); ++i)
 		{
-			VkImageMemoryBarrier2 barrier = image_barrier(l.shadowmap.image, 
+			const Texture& sm = lights.lights[i].shadowmap;
+			VkImageMemoryBarrier2 barrier = image_barrier(sm.image,
 				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, VK_IMAGE_LAYOUT_UNDEFINED,
 				VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT, VK_IMAGE_LAYOUT_GENERAL,
 				VK_IMAGE_ASPECT_DEPTH_BIT);
@@ -1308,7 +1315,7 @@ int main(int argc, char** argv)
 			// Shadow maps
 			VkRenderingAttachmentInfo depth_info{
 				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-				.imageView = l.shadowmap.view,
+				.imageView = sm.view,
 				.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 				.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
 				.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -1370,8 +1377,20 @@ int main(int argc, char** argv)
 				linearProjection._33 /= F;
 				linearProjection._43 /= F;
 				*/
-				pc.mvp = l.orbit_camera.projection * l.orbit_camera.compute_view() * d.transform;
-				pc.far_plane = l.orbit_camera.far_plane;
+
+				const GPULight& gl = lights.gpu_lights[i];
+				glm::mat4 lvp = lights.gpu_lights[i].view_projection;
+				glm::mat4 p = lights.lights[i].orbit_camera.projection;
+				glm::mat4 p2 = glm::perspectiveRH_ZO(glm::radians(45.0f), 1.0f, 0.1f, 10.0f);
+				float q = -p[2][2];
+				float n = p[3][2] / p[2][2];
+				float f = -n * q / (1.0f - q);
+				glm::vec4 v = lvp * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+				glm::vec4 v1 = lvp * glm::vec4(lights.gpu_lights[i].position - gl.direction * 0.1f, 1.0f);
+				glm::vec4 v2 = lvp * glm::vec4(gl.position - gl.direction * gl.far_plane, 1.0f);
+
+				pc.mvp = lights.lights[i].orbit_camera.projection * lights.lights[i].orbit_camera.compute_view() * d.transform;
+				pc.far_plane = lights.lights[i].orbit_camera.far_plane;
 
 				vkCmdPushConstants(command_buffer, shadowmap_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
 
@@ -1382,118 +1401,124 @@ int main(int argc, char** argv)
 			vkCmdEndRendering(command_buffer);
 		}
 
-		VkRenderingAttachmentInfo color_attachments[] = {
-			{
-				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-				.imageView = main_render_target_msaa.view,
-				.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-				.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT,
-				.resolveImageView = main_render_target.view,
-				.resolveImageLayout = VK_IMAGE_LAYOUT_GENERAL,
-				.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-				.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-				.clearValue = {.color = {0.0f, 0.0f, 0.0f, 0.0f} }
-			},
-			{
-				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-				.imageView = linear_depth_texture_msaa.view,
-				.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-				.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT,
-				.resolveImageView = linear_depth_texture.view,
-				.resolveImageLayout = VK_IMAGE_LAYOUT_GENERAL,
-				.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-				.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-				.clearValue = {.color = {0.0f, 0.0f, 0.0f, 0.0f} }
-			},
-		};
-		
+		{ // Do forward pass
 
-		VkRenderingAttachmentInfo depth_info {
-			.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-			.imageView = depth_texture.view,
-			.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-			.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-			.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-			.clearValue = {.depthStencil = {.depth = 1.0f} }
-		};
-
-		VkRenderingInfo rendering_info {
-			.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-			.renderArea = { 0, 0, swapchain.width, swapchain.height },
-			.layerCount = 1,
-			.colorAttachmentCount = (uint32_t)std::size(color_attachments),
-			.pColorAttachments = color_attachments,
-			.pDepthAttachment = &depth_info,
-		};
-
-		vkCmdBeginRendering(command_buffer, &rendering_info);
-
-		VkViewport viewport{
-			.x = 0.0f,
-			.y = (float)swapchain.height,
-			.width = (float)swapchain.width,
-			.height = -(float)swapchain.height,
-			.minDepth = 0.0f,
-			.maxDepth = 1.0f
-		};
-
-		vkCmdSetViewport(command_buffer, 0, 1, &viewport);
-
-		VkRect2D scissor{
-			.offset = { 0, 0 },
-			.extent = { swapchain.width, swapchain.height },
-		};
-
-		vkCmdSetScissor(command_buffer, 0, 1, &scissor);
-
-		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-		vkCmdBindIndexBuffer(command_buffer, index_buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-
-		for (const auto& d : mesh_draws)
-		{
-			assert(d.material_index >= 0);
-			const Material& mat = materials[d.material_index];
-
-			assert(mat.basecolor_texture >= 0);
-			assert(mat.normal_texture >= 0);
-			assert(mat.specular_texture >= 0);
-
-			DescriptorInfo descriptor_info[] = {
-				DescriptorInfo(vertex_buffer.buffer),
-				DescriptorInfo(anisotropic_sampler),
-				DescriptorInfo(linear_sampler),
-				DescriptorInfo(beckmann_lut.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-				DescriptorInfo(textures[mat.basecolor_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-				DescriptorInfo(textures[mat.normal_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-				DescriptorInfo(textures[mat.specular_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-				DescriptorInfo(lights.buffer.buffer),
-				DescriptorInfo(shadow_sampler),
-				DescriptorInfo(lights.lights[0].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
-				DescriptorInfo(lights.lights[1].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
-				DescriptorInfo(lights.lights[2].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
-				DescriptorInfo(lights.lights[3].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
-				DescriptorInfo(lights.lights[4].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
+			VkRenderingAttachmentInfo color_attachments[] = {
+				{
+					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+					.imageView = main_render_target_msaa.view,
+					.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+					.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT,
+					.resolveImageView = main_render_target.view,
+					.resolveImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+					.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+					.clearValue = {.color = {0.0f, 0.0f, 0.0f, 0.0f} }
+				},
+				{
+					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+					.imageView = linear_depth_texture_msaa.view,
+					.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+					.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT,
+					.resolveImageView = linear_depth_texture.view,
+					.resolveImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+					.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+					.clearValue = {.color = {0.0f, 0.0f, 0.0f, 0.0f} }
+				},
 			};
 
-			vkCmdPushDescriptorSetWithTemplateKHR(command_buffer, update_template, pipeline_layout, 0, descriptor_info);
 
-			struct {
-				glm::mat4 mvp;
-				uint32_t n_lights;
-				glm::vec3 camera_pos;
-			} pc;
+			VkRenderingAttachmentInfo depth_info{
+				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+				.imageView = depth_texture.view,
+				.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+				.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+				.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+				.clearValue = {.depthStencil = {.depth = 1.0f} }
+			};
 
-			pc.mvp = viewproj * d.transform;
-			pc.n_lights = (uint32_t)lights.lights.size();
-			pc.camera_pos = glm::inverse(view)[3];
+			VkRenderingInfo rendering_info{
+				.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+				.renderArea = { 0, 0, swapchain.width, swapchain.height },
+				.layerCount = 1,
+				.colorAttachmentCount = (uint32_t)std::size(color_attachments),
+				.pColorAttachments = color_attachments,
+				.pDepthAttachment = &depth_info,
+			};
 
-			vkCmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+			vkCmdBeginRendering(command_buffer, &rendering_info);
 
-			const Mesh& mesh = meshes[d.mesh_index];
-			vkCmdDrawIndexed(command_buffer, mesh.index_count, 1, mesh.first_index, mesh.first_vertex, 0);
+			VkViewport viewport{
+				.x = 0.0f,
+				.y = (float)swapchain.height,
+				.width = (float)swapchain.width,
+				.height = -(float)swapchain.height,
+				.minDepth = 0.0f,
+				.maxDepth = 1.0f
+			};
+
+			vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+
+			VkRect2D scissor{
+				.offset = { 0, 0 },
+				.extent = { swapchain.width, swapchain.height },
+			};
+
+			vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+			vkCmdBindIndexBuffer(command_buffer, index_buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
+			for (const auto& d : mesh_draws)
+			{
+				assert(d.material_index >= 0);
+				const Material& mat = materials[d.material_index];
+
+				assert(mat.basecolor_texture >= 0);
+				assert(mat.normal_texture >= 0);
+				assert(mat.specular_texture >= 0);
+
+				DescriptorInfo descriptor_info[] = {
+					DescriptorInfo(vertex_buffer.buffer),
+					DescriptorInfo(anisotropic_sampler),
+					DescriptorInfo(linear_sampler),
+					DescriptorInfo(point_sampler),
+					DescriptorInfo(beckmann_lut.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+					DescriptorInfo(textures[mat.basecolor_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+					DescriptorInfo(textures[mat.normal_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+					DescriptorInfo(textures[mat.specular_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+					DescriptorInfo(lights.buffer.buffer),
+					DescriptorInfo(shadow_sampler),
+					DescriptorInfo(lights.lights[0].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(lights.lights[1].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(lights.lights[2].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(lights.lights[3].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(lights.lights[4].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
+				};
+
+				vkCmdPushDescriptorSetWithTemplateKHR(command_buffer, update_template, pipeline_layout, 0, descriptor_info);
+
+				struct {
+					glm::mat4 mvp;
+					uint32_t n_lights;
+					glm::vec3 camera_pos;
+					float translucency = SSS_TRANSLUCENCY;
+					float sss_width = SSS_WIDTH;
+				} pc;
+
+				pc.mvp = viewproj * d.transform;
+				pc.n_lights = (uint32_t)lights.lights.size();
+				pc.camera_pos = glm::inverse(view)[3];
+
+				vkCmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+
+				const Mesh& mesh = meshes[d.mesh_index];
+				vkCmdDrawIndexed(command_buffer, mesh.index_count, 1, mesh.first_index, mesh.first_vertex, 0);
+			}
+
+			vkCmdEndRendering(command_buffer);
 		}
-
-		vkCmdEndRendering(command_buffer);
 
 #if 1
 		{ // Do SSS
@@ -1546,7 +1571,7 @@ int main(int argc, char** argv)
 
 				struct {
 					glm::vec2 dir;
-					float sss_width = 0.012f;
+					float sss_width = SSS_WIDTH;
 				} pc;
 
 				pc.dir = pass == 0 ? glm::vec2(1.0f, 0.0f) : glm::vec2(0.0f, 1.0f);

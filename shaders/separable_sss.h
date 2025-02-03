@@ -231,7 +231,7 @@ static const float4 kernel[] = {
 #define SSSSLerp(a, b, t) lerp(a, b, t)
 #define SSSSSaturate(a) saturate(a)
 #define SSSSMad(a, b, c) mad(a, b, c)
-#define SSSSMul(v, m) mul(v, m)
+#define SSSSMul(v, m) mul(m, v)
 #define SSSS_FLATTEN [flatten]
 #define SSSS_BRANCH [branch]
 #define SSSS_UNROLL [unroll]

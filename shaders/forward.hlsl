@@ -34,20 +34,25 @@ struct Light {
 
 [[vk::binding(0)]] StructuredBuffer<Vertex> vertex_buffer;
 [[vk::binding(1)]] SamplerState anisotropic_sampler;
-[[vk::binding(2)]] SamplerState linear_sampler;
-[[vk::binding(3)]] Texture2D beckmann_texture;
-[[vk::binding(4)]] Texture2D basecolor_texture;
-[[vk::binding(5)]] Texture2D normal_texture;
-[[vk::binding(6)]] Texture2D specular_texture;
-[[vk::binding(7)]] StructuredBuffer<Light> lights;
-[[vk::binding(8)]] SamplerComparisonState shadow_sampler;
-[[vk::binding(9)]] Texture2D shadowmaps[5];
+[[vk::binding(2)]] SamplerState LinearSampler;
+[[vk::binding(3)]] SamplerState PointSampler;
+[[vk::binding(4)]] Texture2D beckmann_texture;
+[[vk::binding(5)]] Texture2D basecolor_texture;
+[[vk::binding(6)]] Texture2D normal_texture;
+[[vk::binding(7)]] Texture2D specular_texture;
+[[vk::binding(8)]] StructuredBuffer<Light> lights;
+[[vk::binding(9)]] SamplerComparisonState shadow_sampler;
+[[vk::binding(10)]] Texture2D shadowmaps[5];
+
+#include "separable_sss.h"
 
 struct PushConstants
 {
     float4x4 viewproj;
     uint num_lights;
     float3 camera_pos;
+    float translucency;
+    float sss_width;
 };
 
 [[vk::push_constant]]
@@ -88,8 +93,6 @@ float get_shadow(float3 world_pos, int i)
 {
     float4 shadow_pos = mul(lights[i].view_projection, float4(world_pos, 1.0));
     shadow_pos.xy /= shadow_pos.w;
-    shadow_pos.xy = shadow_pos.xy * 0.5 + 0.5;
-    shadow_pos.y = 1 - shadow_pos.y;
     shadow_pos.z += lights[i].bias;
     shadow_pos.z /= lights[i].far_plane;
     return shadowmaps[i].SampleCmpLevelZero(shadow_sampler, shadow_pos.xy, shadow_pos.z).r;
@@ -98,8 +101,6 @@ float get_shadow(float3 world_pos, int i)
 float get_shadow_pcf(float3 world_pos, int i, int samples, float width) {
     float4 shadow_pos = mul(lights[i].view_projection, float4(world_pos, 1.0));
     shadow_pos.xy /= shadow_pos.w;
-    shadow_pos.xy = shadow_pos.xy * 0.5 + 0.5;
-    shadow_pos.y = 1 - shadow_pos.y;
     shadow_pos.z += lights[i].bias;
     shadow_pos.z /= lights[i].far_plane;
     
@@ -202,15 +203,19 @@ FSOutput fs_main(FSInput input)
             float3 f2 = basecolor.rgb * f1;
 
             float diffuse = saturate(dot(normal, light));
-            float specular = intensity * specular_ksk(beckmann_texture, linear_sampler, normal, light, view, roughness, specular_fresnel);
+            float specular = intensity * specular_ksk(beckmann_texture, LinearSampler, normal, light, view, roughness, specular_fresnel);
 
             float shadow = get_shadow_pcf(input.world_position, i, 3, 1.0);
 
             radiance += shadow * (f2 * diffuse + f1 * specular);
+
+            radiance += f2 * SSSSTransmittance(push_constants.translucency, push_constants.sss_width, 
+                input.world_position, input.normal, 
+                light, shadowmaps[i], lights[i].view_projection, lights[i].far_plane);
         }
     }
 
-    output.color = float4(radiance, 1);
+    output.color = float4(radiance, basecolor.a);
     output.depth = 1.0 / input.position.w;
 
     return output;
