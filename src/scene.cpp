@@ -4,7 +4,20 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <algorithm>
 
-bool load_scene(const char* path, std::vector<Mesh>& meshes, std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, std::vector<MeshDraw>& mesh_draws)
+bool load_scene(
+	const char* path,
+	std::vector<Mesh>& meshes,
+	std::vector<Material>& materials,
+	std::vector<Texture>& textures,
+	std::vector<Vertex>& vertices,
+	std::vector<uint32_t>& indices,
+	std::vector<MeshDraw>& mesh_draws,
+	VkDevice device,
+	VmaAllocator allocator,
+	VkCommandPool command_pool,
+	VkCommandBuffer command_buffer,
+	VkQueue queue,
+	const Buffer& scratch)
 {
 	meshes.clear();
 	indices.clear();
@@ -27,6 +40,7 @@ bool load_scene(const char* path, std::vector<Mesh>& meshes, std::vector<Vertex>
 		return false;
 	}
 
+	// Load meshes
 	for (uint32_t i = 0; i < data->meshes_count; ++i)
 	{
 		const cgltf_mesh& mesh = data->meshes[i];
@@ -83,7 +97,7 @@ bool load_scene(const char* path, std::vector<Mesh>& meshes, std::vector<Vertex>
 			if (const cgltf_accessor* uv = cgltf_find_accessor(&prim, cgltf_attribute_type_texcoord, 0))
 			{
 				assert(cgltf_num_components(uv->type) == 2);
-				std::vector<glm::vec4> uvs(uv->count);
+				std::vector<glm::vec2> uvs(uv->count);
 				cgltf_accessor_unpack_floats(uv, glm::value_ptr(uvs[0]), uvs.size() * 2);
 				for (uint32_t i = 0; i < uvs.size(); ++i)
 				{
@@ -94,16 +108,66 @@ bool load_scene(const char* path, std::vector<Mesh>& meshes, std::vector<Vertex>
 		}
 	}
 
+	std::vector<bool> texture_is_srgb(data->textures_count);
+	for (uint32_t i = 0; i < data->materials_count; ++i)
+	{
+		const cgltf_material& m = data->materials[i];
+
+		assert(m.has_pbr_metallic_roughness);
+		assert(m.occlusion_texture.texture);
+		assert(m.pbr_metallic_roughness.base_color_texture.texture);
+		assert(m.pbr_metallic_roughness.metallic_roughness_texture.texture);
+		assert(m.normal_texture.texture);
+
+		int basecolor_index = (int)cgltf_texture_index(data, m.pbr_metallic_roughness.base_color_texture.texture);
+		texture_is_srgb[basecolor_index] = true;
+		Material mat{
+			.basecolor_texture = basecolor_index,
+			.normal_texture = (int)cgltf_texture_index(data, m.normal_texture.texture),
+			.metallic_roughness_texture = (int)cgltf_texture_index(data, m.pbr_metallic_roughness.metallic_roughness_texture.texture),
+			.specular_texture = -1,
+			.occlusion_texture = (int)cgltf_texture_index(data, m.occlusion_texture.texture),
+
+			.basecolor_factor = glm::make_vec4(m.pbr_metallic_roughness.base_color_factor),
+			.metallic_factor = m.pbr_metallic_roughness.metallic_factor,
+			.roughness_factor = m.pbr_metallic_roughness.roughness_factor
+		};
+
+		materials.push_back(mat);
+	}
+
+	for (uint32_t i = 0; i < data->textures_count; ++i)
+	{
+		const cgltf_texture& t = data->textures[i];
+
+		size_t size = t.image->buffer_view->size;
+		const uint8_t* data = cgltf_buffer_view_data(t.image->buffer_view);
+
+		bool is_srgb = texture_is_srgb[i];
+		Texture tex;
+		if (!load_png_or_jpg_texture(tex, data, size, device, allocator, command_pool, command_buffer, queue, scratch, is_srgb))
+		{
+			printf("Failed to load texture\n");
+			return false;
+		}
+
+		textures.push_back(tex);
+	}
+
+	generate_mipmaps(textures, device, allocator, command_pool, command_buffer, queue, scratch);
+
 	for (size_t i = 0; i < data->nodes_count; ++i)
 	{
 		const cgltf_node& node = data->nodes[i];
 		if (node.mesh)
 		{
+			assert(node.mesh->primitives_count == 1);
 			glm::mat4 transform;
 			cgltf_node_transform_world(&node, glm::value_ptr(transform));
 			MeshDraw draw{
 				.transform = transform,
-				.mesh_index = (uint32_t)cgltf_mesh_index(data, node.mesh)
+				.mesh_index = (uint32_t)cgltf_mesh_index(data, node.mesh),
+				.material_index = (int)cgltf_material_index(data, node.mesh->primitives[0].material)
 			};
 
 			mesh_draws.push_back(draw);

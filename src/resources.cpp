@@ -1,6 +1,10 @@
 #include "resources.h"
 #include "dds.h"
 #include <filesystem>
+#include <optional>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
 
 VkMemoryBarrier2 memory_barrier(VkPipelineStageFlags2 src_stage_mask, VkAccessFlags2 src_access_mask, VkPipelineStageFlags2 dst_stage_mask, VkAccessFlags2 dst_access_mask)
 {
@@ -34,6 +38,23 @@ VkImageMemoryBarrier2 image_barrier(VkImage image, VkPipelineStageFlags2 src_sta
 			.baseArrayLayer = 0,
 			.layerCount = VK_REMAINING_ARRAY_LAYERS
 		}
+	};
+	return barrier;
+}
+
+VkImageMemoryBarrier2 image_barrier(VkImage image, VkPipelineStageFlags2 src_stage_mask, VkAccessFlags2 src_access_mask, VkImageLayout old_layout, VkPipelineStageFlags2 dst_stage_mask, VkAccessFlags2 dst_access_mask, VkImageLayout new_layout, VkImageSubresourceRange range)
+{
+	VkImageMemoryBarrier2 barrier{
+		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+		.pNext = nullptr,
+		.srcStageMask = src_stage_mask,
+		.srcAccessMask = src_access_mask,
+		.dstStageMask = dst_stage_mask,
+		.dstAccessMask = dst_access_mask,
+		.oldLayout = old_layout,
+		.newLayout = new_layout,
+		.image = image,
+		.subresourceRange = range,
 	};
 	return barrier;
 }
@@ -179,7 +200,9 @@ Texture create_texture(VkDevice device, VmaAllocator allocator, uint32_t width, 
 		.device = device,
 		.width = width,
 		.height = height,
-		.format = format
+		.format = format,
+		.mip_levels = mip_levels,
+		.array_layers = array_layers,
 	};
 }
 
@@ -496,4 +519,176 @@ bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAlloca
 	VK_CHECK(vkDeviceWaitIdle(device));
 
 	return true;
+}
+
+static uint32_t get_mip_count(uint32_t texture_width, uint32_t texture_height)
+{
+	return (uint32_t)(std::floor(std::log2(std::max(texture_width, texture_height)))) + 1;
+}
+
+bool load_png_or_jpg_texture(Texture& texture, const uint8_t* data, size_t data_size, VkDevice device, VmaAllocator allocator, VkCommandPool command_pool, VkCommandBuffer command_buffer, VkQueue queue, const Buffer& scratch, bool is_srgb)
+{
+	int width, height, channels;
+	constexpr int required_channels = 4;
+	stbi_uc* loaded_data = stbi_load_from_memory(data, (int)data_size, &width, &height, &channels, required_channels);
+	if (!loaded_data) return false;
+
+	VkFormat format = is_srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+	uint32_t mip_levels = get_mip_count(width, height);
+	texture = create_texture(device, allocator, width, height, 1, format, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, mip_levels);
+
+	size_t image_size = width * height * 4;
+	assert(image_size <= scratch.size);
+	void* mapped = scratch.map();
+	memcpy(mapped, loaded_data, image_size);
+	scratch.unmap();
+
+	vkResetCommandPool(device, command_pool, 0);
+
+	VkCommandBufferBeginInfo begin_info{
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+	};
+	VK_CHECK(vkBeginCommandBuffer(command_buffer, &begin_info));
+
+	{ // Undefined -> transfer dst optimal
+		VkImageMemoryBarrier2 barrier = image_barrier(texture.image,
+			0, 0, VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			VK_IMAGE_ASPECT_COLOR_BIT);
+
+		pipeline_barrier(command_buffer, {}, { barrier });
+	}
+
+	VkBufferImageCopy copy{
+		.bufferOffset = 0,
+		.imageSubresource = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.mipLevel = 0,
+			.baseArrayLayer = 0,
+			.layerCount = 1
+		},
+		.imageOffset = {0, 0, 0 },
+		.imageExtent = {(uint32_t)width, (uint32_t)height, 1u}
+	};
+
+	vkCmdCopyBufferToImage(command_buffer, scratch.buffer, texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+
+	// Transfer dst optimal -> shader read only optimal
+	{
+		VkImageMemoryBarrier2 barrier = image_barrier(texture.image,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VK_IMAGE_ASPECT_COLOR_BIT);
+		pipeline_barrier(command_buffer, {}, { barrier });
+	}
+
+	VK_CHECK(vkEndCommandBuffer(command_buffer));
+
+	VkSubmitInfo submit_info{
+	.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+	.commandBufferCount = 1,
+	.pCommandBuffers = &command_buffer
+	};
+
+	VK_CHECK(vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE));
+	VK_CHECK(vkDeviceWaitIdle(device));
+
+	stbi_image_free(loaded_data);
+
+	return true;
+}
+
+void generate_mipmaps(const std::vector<Texture>& textures, VkDevice device, VmaAllocator allocator, VkCommandPool command_pool, VkCommandBuffer command_buffer, VkQueue queue, const Buffer& scratch)
+{
+	vkResetCommandPool(device, command_pool, 0);
+
+	VkCommandBufferBeginInfo begin_info{
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+	};
+	VK_CHECK(vkBeginCommandBuffer(command_buffer, &begin_info));
+
+	for (const auto& t : textures)
+	{
+		VkImageMemoryBarrier2 barrier = image_barrier(t.image,
+			0, 0, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+		pipeline_barrier(command_buffer, {}, { barrier });
+
+		int32_t width = t.width;
+		int32_t height = t.height;
+		for (uint32_t i = 1; i < t.mip_levels; ++i)
+		{
+			VkImageMemoryBarrier2 prebarrier = image_barrier(t.image,
+				0, 0, VK_IMAGE_LAYOUT_UNDEFINED,
+				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				{
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.baseMipLevel = i,
+					.levelCount = 1,
+					.baseArrayLayer = 0,
+					.layerCount = 1
+				}
+			);
+
+			pipeline_barrier(command_buffer, {}, { prebarrier });
+
+			int32_t mip_width = std::max(1, width >> 1);
+			int32_t mip_height = std::max(1, height >> 1);
+
+			VkImageBlit region{
+				.srcSubresource{
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.mipLevel = i - 1,
+					.baseArrayLayer = 0,
+					.layerCount = 1,
+				},
+				.srcOffsets = {{0, 0, 0}, {width, height, 1}},
+				.dstSubresource{
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.mipLevel = i,
+					.baseArrayLayer = 0,
+					.layerCount = 1
+				},
+				.dstOffsets = {{0, 0, 0}, {mip_width, mip_height, 1}},
+			};
+			vkCmdBlitImage(command_buffer, t.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_LINEAR);
+
+			VkImageMemoryBarrier2 postbarrier = image_barrier(t.image,
+				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				{
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.baseMipLevel = i,
+					.levelCount = 1,
+					.baseArrayLayer = 0,
+					.layerCount = 1
+				}
+			);
+
+			pipeline_barrier(command_buffer, {}, { postbarrier });
+
+			width = mip_width;
+			height = mip_height;
+		}
+
+		VkImageMemoryBarrier2 final_barrier = image_barrier(t.image,
+			VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+		pipeline_barrier(command_buffer, {}, { final_barrier });
+	}
+
+	VK_CHECK(vkEndCommandBuffer(command_buffer));
+
+	VkSubmitInfo submit_info{
+		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		.commandBufferCount = 1,
+		.pCommandBuffers = &command_buffer
+	};
+
+	VK_CHECK(vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE));
+	VK_CHECK(vkDeviceWaitIdle(device));
 }

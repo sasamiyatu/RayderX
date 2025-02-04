@@ -14,6 +14,7 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #define VMA_IMPLEMENTATION
 #include "vma/vk_mem_alloc.h"
@@ -652,15 +653,15 @@ void set_viewport_and_scissor(VkCommandBuffer cmd, uint32_t width, uint32_t heig
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
 }
 
-void begin_rendering(VkCommandBuffer cmd, uint32_t width, uint32_t height, std::initializer_list<VkRenderingAttachmentInfo> color_attachments, VkRenderingAttachmentInfo* depth_attachment = nullptr)
+void begin_rendering(VkCommandBuffer cmd, uint32_t width, uint32_t height, std::initializer_list<VkRenderingAttachmentInfo> color_attachments, std::optional<VkRenderingAttachmentInfo> depth_attachment = {})
 {
 	VkRenderingInfo rendering_info{
 		.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
 		.renderArea = { 0, 0, width, height },
 		.layerCount = 1,
-		.colorAttachmentCount = 1,
+		.colorAttachmentCount = (uint32_t)color_attachments.size(),
 		.pColorAttachments = color_attachments.begin(),
-		.pDepthAttachment = depth_attachment,
+		.pDepthAttachment = depth_attachment.has_value() ? &*depth_attachment : nullptr,
 	};
 
 	vkCmdBeginRendering(cmd, &rendering_info);
@@ -808,14 +809,17 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 
+	bool scene_is_gltf = false;
 	std::filesystem::path ext = std::filesystem::path(argv[1]).extension();
 	if (ext == ".glb" || ext == ".gltf")
 	{
-		if (!load_scene(argv[1], meshes, vertices, indices, mesh_draws))
+		if (!load_scene(argv[1], meshes, materials, textures, vertices, indices, mesh_draws, device, allocator, command_pool, command_buffer, queue, scratch_buffer))
 		{
 			printf("Failed to load scene!\n");
 			return 1;
 		}
+
+		scene_is_gltf = true;
 	}
 	else if (ext == ".sdkmesh")
 	{
@@ -1210,6 +1214,13 @@ int main(int argc, char** argv)
 	Program forward_program = create_program(device, { vertex_shader, fragment_shader }, true);
 	VkPipeline pipeline = create_pipeline(device, { vertex_shader, fragment_shader }, forward_program.pipeline_layout, {RENDER_TARGET_FORMAT, LINEAR_DEPTH_FORMAT}, DEPTH_FORMAT, MSAA);
 
+	Shader gltf_vertex_shader{};
+	Shader gltf_fragment_shader{};
+	FAIL_ON_ERROR(load_shader(gltf_vertex_shader, compiler, device, "forward_gltf.hlsl", "vs_main", VK_SHADER_STAGE_VERTEX_BIT));
+	FAIL_ON_ERROR(load_shader(gltf_fragment_shader, compiler, device, "forward_gltf.hlsl", "fs_main", VK_SHADER_STAGE_FRAGMENT_BIT));
+	Program forward_gltf_program = create_program(device, { gltf_vertex_shader, gltf_fragment_shader }, true);
+	VkPipeline forward_gltf_pipeline = create_pipeline(device, { gltf_vertex_shader, gltf_fragment_shader }, forward_gltf_program.pipeline_layout, { RENDER_TARGET_FORMAT, LINEAR_DEPTH_FORMAT }, DEPTH_FORMAT, MSAA);
+
 	Shader shadowmap_vertex_shader{};
 	FAIL_ON_ERROR(load_shader(shadowmap_vertex_shader, compiler, device, "shadowmap.hlsl", "vs_main", VK_SHADER_STAGE_VERTEX_BIT));
 	Program shadowmap_program = create_program(device, { shadowmap_vertex_shader }, true);
@@ -1542,8 +1553,105 @@ int main(int argc, char** argv)
 			pipeline_barrier(command_buffer, { barrier }, {});
 		}
 
-		{ // Do forward pass
+		// Do forward pass
+		if (scene_is_gltf)
+		{
+			begin_rendering(command_buffer, swapchain.width, swapchain.height, {
+				{
+					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+					.imageView = main_render_target_msaa.view,
+					.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+					.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT,
+					.resolveImageView = main_render_target.view,
+					.resolveImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+					.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+					.clearValue = {.color = {0.0f, 0.0f, 0.0f, 0.0f} }
+				},
+				{
+					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+					.imageView = linear_depth_texture_msaa.view,
+					.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+					.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT,
+					.resolveImageView = linear_depth_texture.view,
+					.resolveImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+					.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+					.clearValue = {.color = {0.0f, 0.0f, 0.0f, 0.0f} }
+				}},
+				{
+					{
+						.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+						.imageView = depth_texture.view,
+						.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+						.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+						.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+						.clearValue = {.depthStencil = {.depth = 1.0f} }
+					}
+				});
 
+			set_viewport_and_scissor(command_buffer, swapchain.width, swapchain.height);
+
+			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, forward_gltf_pipeline);
+			vkCmdBindIndexBuffer(command_buffer, index_buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
+			for (const auto& d : mesh_draws)
+			{
+				assert(d.material_index >= 0);
+				const Material& mat = materials[d.material_index];
+
+				assert(mat.basecolor_texture >= 0);
+				assert(mat.normal_texture >= 0);
+				assert(mat.metallic_roughness_texture >= 0);
+
+				DescriptorInfo descriptor_info[] = {
+					DescriptorInfo(vertex_buffer.buffer),
+					DescriptorInfo(anisotropic_sampler),
+					DescriptorInfo(linear_sampler),
+					DescriptorInfo(point_sampler),
+					DescriptorInfo(beckmann_lut.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+					DescriptorInfo(textures[mat.basecolor_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+					DescriptorInfo(textures[mat.normal_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+					DescriptorInfo(textures[mat.metallic_roughness_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+					DescriptorInfo(lights.buffer.buffer),
+					DescriptorInfo(shadow_sampler),
+					DescriptorInfo(lights.lights[0].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(lights.lights[1].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(lights.lights[2].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(lights.lights[3].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(lights.lights[4].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(environment.irradiance.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+				};
+
+				vkCmdPushDescriptorSetWithTemplateKHR(command_buffer, forward_gltf_program.descriptor_update_template, forward_gltf_program.pipeline_layout, 0, descriptor_info);
+
+				struct {
+					glm::mat4 viewproj;
+					glm::mat4 model;
+					uint32_t n_lights;
+					glm::vec3 camera_pos;
+					float translucency = SSS_TRANSLUCENCY;
+					float sss_width = SSS_WIDTH;
+					float ambient = AMBIENT_INTENSITY;
+				} pc;
+
+				pc.viewproj = viewproj;
+				pc.model = d.transform;
+				pc.n_lights = (uint32_t)lights.lights.size();
+				pc.camera_pos = glm::inverse(view)[3];
+
+				glm::quat quat = glm::quat_cast(glm::inverse(main_camera.compute_view()));
+
+				vkCmdPushConstants(command_buffer, forward_gltf_program.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+
+				const Mesh& mesh = meshes[d.mesh_index];
+				vkCmdDrawIndexed(command_buffer, mesh.index_count, 1, mesh.first_index, mesh.first_vertex, 0);
+			}
+
+			vkCmdEndRendering(command_buffer);
+		}
+		else
+		{ 
 			VkRenderingAttachmentInfo color_attachments[] = {
 				{
 					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -2168,6 +2276,7 @@ int main(int argc, char** argv)
 	main_render_target_msaa.destroy();
 	tmp_render_target.destroy();
 	destroy_program(device, forward_program);
+	destroy_program(device, forward_gltf_program);
 	destroy_program(device, tonemap_program);
 	destroy_program(device, shadowmap_program);
 	destroy_program(device, sss_program);
@@ -2179,6 +2288,7 @@ int main(int argc, char** argv)
 	destroy_program(device, dof_blur_program);
 	destroy_program(device, film_grain_program);
 	vkDestroyPipeline(device, pipeline, nullptr);
+	vkDestroyPipeline(device, forward_gltf_pipeline, nullptr);
 	vkDestroyPipeline(device, shadowmap_pipeline, nullptr);
 	vkDestroyPipeline(device, tonemap_pipeline, nullptr);
 	vkDestroyPipeline(device, sss_pipeline , nullptr);

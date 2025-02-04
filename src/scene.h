@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <glm/glm.hpp>
+#include "resources.h"
 
 struct Vertex
 {
@@ -32,6 +33,24 @@ struct Material
 	int normal_texture;
 	int metallic_roughness_texture;
 	int specular_texture;
-};
+	int occlusion_texture;
 
-bool load_scene(const char* path, std::vector<Mesh>& meshes, std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, std::vector<MeshDraw>& mesh_draws);
+	glm::vec4 basecolor_factor;
+	float metallic_factor;
+	float roughness_factor;
+};
+	
+bool load_scene(
+	const char* path, 
+	std::vector<Mesh>& meshes, 
+	std::vector<Material>& materials, 
+	std::vector<Texture>& textures, 
+	std::vector<Vertex>& vertices,
+	std::vector<uint32_t>& indices, 
+	std::vector<MeshDraw>& mesh_draws,
+	VkDevice device, 
+	VmaAllocator allocator, 
+	VkCommandPool command_pool, 
+	VkCommandBuffer command_buffer, 
+	VkQueue queue, 
+	const Buffer& scratch);
