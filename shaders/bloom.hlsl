@@ -124,7 +124,7 @@ FSOutput combine(FSInput input)
     float3 white_scale = 1.0f / filmic(11.2);
     color.rgb *= white_scale;
 
-    color.rgb = linear_to_srgb(color.rgb);
+    //color.rgb = linear_to_srgb(color.rgb);
     output.color = color;
 
     return output;
