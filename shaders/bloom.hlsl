@@ -120,11 +120,31 @@ FSOutput combine(FSInput input)
         color.a += s.a / N_PASSES;
     }
 
+#if 1
+    color.rgb = 2.0f * filmic(push_constants.exposure * color.rgb);
+    float3 white_scale = 1.0f / filmic(11.2);
+    color.rgb *= white_scale;
+#else
+    color.rgb = agx(push_constants.exposure * color.rgb);
+#endif  
+
+    //color.rgb = linear_to_srgb(color.rgb);
+    output.color = color;
+
+    return output;
+}
+
+
+FSOutput tonemap(FSInput input)
+{
+    FSOutput output = (FSOutput)0;
+
+    float4 color = in_render_target.Sample(linear_sampler, input.uv);
+
     color.rgb = 2.0f * filmic(push_constants.exposure * color.rgb);
     float3 white_scale = 1.0f / filmic(11.2);
     color.rgb *= white_scale;
 
-    //color.rgb = linear_to_srgb(color.rgb);
     output.color = color;
 
     return output;

@@ -29,11 +29,23 @@ struct MeshDraw
 
 struct Material
 {
+	enum Type
+	{
+		STANDARD = 0,
+		SKIN,
+		EYES,
+		EYE_OCCLUSION,
+		TEARLINE,
+	};
+
+	Type type;
+
 	int basecolor_texture;
 	int normal_texture;
 	int metallic_roughness_texture;
 	int specular_texture;
 	int occlusion_texture;
+	int emissive_texture;
 
 	glm::vec4 basecolor_factor;
 	float metallic_factor;

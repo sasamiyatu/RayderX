@@ -3,8 +3,7 @@
 [[vk::binding(2)]] Texture2D in_render_target;
 [[vk::binding(3)]] Texture2D in_linear_depth;
 
-#define SSSS_FOLLOW_SURFACE 1
-
+#include "sss_config.hlsli"
 #include "separable_sss.h"
 
 struct PushConstants

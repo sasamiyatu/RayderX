@@ -45,6 +45,7 @@ struct Light {
 [[vk::binding(10)]] Texture2D shadowmaps[5];
 [[vk::binding(11)]] TextureCube irradiance_texture;
 
+#include "sss_config.hlsli"
 #include "separable_sss.h"
 
 struct PushConstants
@@ -217,10 +218,11 @@ FSOutput fs_main(FSInput input)
             float shadow = get_shadow_pcf(input.world_position, i, 3, 1.0);
 
             radiance += shadow * (f2 * diffuse + f1 * specular);
-
+#if 1
             radiance += f2 * SSSSTransmittance(push_constants.translucency, push_constants.sss_width, 
                 input.world_position, input.normal, 
                 light, shadowmaps[i], lights[i].view_projection, lights[i].far_plane);
+#endif
         }
     }
 

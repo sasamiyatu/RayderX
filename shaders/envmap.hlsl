@@ -1,3 +1,5 @@
+#include "color.hlsli"
+
 struct VSInput
 {
     uint vertex_id: SV_VertexID;
@@ -59,7 +61,7 @@ FSOutput fs_main(FSInput input)
     FSOutput output = (FSOutput)0;
 
     input.world_position.z = -input.world_position.z;
-    float4 env = push_constants.intensity * envmap.Sample(linear_sampler, input.world_position);
+    float3 env = push_constants.intensity * envmap.Sample(linear_sampler, input.world_position).rgb;
     output.color = float4(env.rgb, 0);
 
     return output;

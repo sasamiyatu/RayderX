@@ -113,20 +113,36 @@ bool load_scene(
 	{
 		const cgltf_material& m = data->materials[i];
 
-		assert(m.has_pbr_metallic_roughness);
-		assert(m.occlusion_texture.texture);
-		assert(m.pbr_metallic_roughness.base_color_texture.texture);
-		assert(m.pbr_metallic_roughness.metallic_roughness_texture.texture);
-		assert(m.normal_texture.texture);
+		//assert(m.has_pbr_metallic_roughness);
+		//assert(m.occlusion_texture.texture);
+		//assert(m.pbr_metallic_roughness.base_color_texture.texture);
+		//assert(m.pbr_metallic_roughness.metallic_roughness_texture.texture);
+		//assert(m.normal_texture.texture);
+		assert(m.name);
 
-		int basecolor_index = (int)cgltf_texture_index(data, m.pbr_metallic_roughness.base_color_texture.texture);
-		texture_is_srgb[basecolor_index] = true;
+		Material::Type type = Material::STANDARD;
+		std::string name = m.name;
+		for (auto& c : name) c = std::tolower(c);
+		if (name.find("skin") != std::string::npos) type = Material::SKIN;
+		else if (name.find("cornea") != std::string::npos) type = Material::EYES;
+		else if (name.find("eye_occlusion") != std::string::npos) type = Material::EYE_OCCLUSION;
+		else if (name.find("tearline") != std::string::npos) type = Material::TEARLINE;
+
+		int basecolor_index = m.pbr_metallic_roughness.base_color_texture.texture ? (int)cgltf_texture_index(data, m.pbr_metallic_roughness.base_color_texture.texture) : -1;
+		int normal_index = m.normal_texture.texture ? (int)cgltf_texture_index(data, m.normal_texture.texture) : -1;
+		int emissive_index = m.emissive_texture.texture ? (int)cgltf_texture_index(data, m.emissive_texture.texture) : -1;
+		int metallic_roughness_index = m.pbr_metallic_roughness.metallic_roughness_texture.texture ? (int)cgltf_texture_index(data, m.pbr_metallic_roughness.metallic_roughness_texture.texture) : -1;
+		int occlusion_index = m.occlusion_texture.texture ? (int)cgltf_texture_index(data, m.occlusion_texture.texture) : -1;
+		if (basecolor_index >= 0) texture_is_srgb[basecolor_index] = true;
+		if (emissive_index >= 0) texture_is_srgb[emissive_index] = true;
 		Material mat{
+			.type = type,
 			.basecolor_texture = basecolor_index,
-			.normal_texture = (int)cgltf_texture_index(data, m.normal_texture.texture),
-			.metallic_roughness_texture = (int)cgltf_texture_index(data, m.pbr_metallic_roughness.metallic_roughness_texture.texture),
+			.normal_texture = normal_index,
+			.metallic_roughness_texture = metallic_roughness_index,
 			.specular_texture = -1,
-			.occlusion_texture = (int)cgltf_texture_index(data, m.occlusion_texture.texture),
+			.occlusion_texture = occlusion_index,
+			.emissive_texture = emissive_index,
 
 			.basecolor_factor = glm::make_vec4(m.pbr_metallic_roughness.base_color_factor),
 			.metallic_factor = m.pbr_metallic_roughness.metallic_factor,

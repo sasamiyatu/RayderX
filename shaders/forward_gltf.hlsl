@@ -1,3 +1,6 @@
+#include "color.hlsli"
+#include "brdf.hlsli"
+
 struct VSInput
 {
     uint vertex_id: SV_VertexID;
@@ -39,12 +42,15 @@ struct Light {
 [[vk::binding(4)]] Texture2D beckmann_texture;
 [[vk::binding(5)]] Texture2D basecolor_texture;
 [[vk::binding(6)]] Texture2D normal_texture;
-[[vk::binding(7)]] Texture2D specular_texture;
-[[vk::binding(8)]] StructuredBuffer<Light> lights;
-[[vk::binding(9)]] SamplerComparisonState shadow_sampler;
-[[vk::binding(10)]] Texture2D shadowmaps[5];
-[[vk::binding(11)]] TextureCube irradiance_texture;
+[[vk::binding(7)]] Texture2D metallic_roughness_texture;
+[[vk::binding(8)]] Texture2D occlusion_texture;
+[[vk::binding(9)]] StructuredBuffer<Light> lights;
+[[vk::binding(10)]] SamplerComparisonState shadow_sampler;
+[[vk::binding(11)]] Texture2D shadowmaps[5];
+[[vk::binding(12)]] TextureCube irradiance_texture;
+[[vk::binding(13)]] TextureCube environment_texture;
 
+#include "sss_config.hlsli"
 #include "separable_sss.h"
 
 struct PushConstants
@@ -154,9 +160,7 @@ float specular_ksk(Texture2D beckmann_lut, SamplerState tex_sampler, float3 norm
 
 float3 normal_map(Texture2D tex, SamplerState tex_sampler, float2 uv) 
 {
-    float3 normal;
-    normal.xy = -1.0 + 2.0 * tex.Sample(tex_sampler, uv).gr;
-    normal.z = sqrt(1.0 - normal.x * normal.x - normal.y * normal.y);
+    float3 normal = -1.0 + 2.0 * tex.Sample(tex_sampler, uv).rgb;
     return normalize(normal);
 }
 
@@ -178,21 +182,29 @@ FSOutput fs_main(FSInput input)
     float3 view = normalize(push_constants.camera_pos - input.world_position);
 
     float4 basecolor = basecolor_texture.Sample(anisotropic_sampler, input.uv);
-    //float4 basecolor = basecolor_texture.SampleLevel(anisotropic_sampler, input.uv, 0);
-    float3 specular_ao = specular_texture.Sample(anisotropic_sampler, input.uv).rgb;
+    float3 metallic_roughness = metallic_roughness_texture.Sample(anisotropic_sampler, input.uv).rgb;
 
     // Transform bumped normal to world space, in order to use IBL for ambient lighting:
     const float bumpiness = 0.9;
     float3 tangent_space_normal = lerp(float3(0.0, 0.0, 1.0), normal_map(normal_texture, anisotropic_sampler, input.uv), bumpiness);
     float3 normal = mul(tangent_space_normal, tbn);
 
+    float NoV = abs(dot(view, normal)) + 1e-5f;
+
     const float specular_intensity = 1.88;
     const float specular_roughness = 0.3;
     const float specular_fresnel = 0.82;
 
-    float intensity = specular_ao.r * specular_intensity;
-    float roughness = (specular_ao.g / 0.3) * specular_roughness;
-    float occlusion = specular_ao.b;
+    float intensity = metallic_roughness.b;
+    float roughness = metallic_roughness.g;
+    float occlusion = occlusion_texture.Sample(anisotropic_sampler, input.uv).r;
+    //occlusion = pow(occlusion, 10);
+
+    //intensity *= specular_intensity;
+    //roughness = (roughness / 0.3) * specular_roughness;
+    //float intensity = metallic_roughness.r * specular_intensity;
+    //float roughness = (specular_ao.g / 0.3) * specular_roughness;
+    //float occlusion = specular_ao.b;
 
     float3 radiance = 0;
 
@@ -222,17 +234,17 @@ FSOutput fs_main(FSInput input)
             float shadow = get_shadow_pcf(input.world_position, i, 3, 1.0);
 
             radiance += shadow * (f2 * diffuse + f1 * specular);
-
+#if 1
             radiance += f2 * SSSSTransmittance(push_constants.translucency, push_constants.sss_width, 
                 input.world_position, input.normal, 
                 light, shadowmaps[i], lights[i].view_projection, lights[i].far_plane);
+#endif
         }
     }
 
     radiance += push_constants.ambient * occlusion * basecolor.rgb * saturate(sample_cubemap(irradiance_texture, normal).rgb);
 
-    radiance = input.normal * 0.5 + 0.5;
-    output.color = float4(basecolor.rgb, basecolor.a);
+    output.color = float4(radiance.rgb, basecolor.a);
     output.depth = 1.0 / input.position.w;
 
     return output;

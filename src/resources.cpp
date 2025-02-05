@@ -276,6 +276,211 @@ static VkFormat get_format(const DDS_HEADER* header, bool srgb)
 	return VK_FORMAT_UNDEFINED;
 }
 
+VkFormat get_format(DXGI_FORMAT format)
+{
+	switch (format)
+	{
+		case DXGI_FORMAT_UNKNOWN:
+			return VK_FORMAT_UNDEFINED;
+		case DXGI_FORMAT_R32G32B32A32_TYPELESS:
+		case DXGI_FORMAT_R32G32B32A32_FLOAT:
+			return VK_FORMAT_R32G32B32A32_SFLOAT;
+		case DXGI_FORMAT_R32G32B32A32_UINT:
+			VK_FORMAT_R32G32B32A32_UINT;
+		case DXGI_FORMAT_R32G32B32A32_SINT:
+			VK_FORMAT_R32G32B32A32_SINT;
+		case DXGI_FORMAT_R32G32B32_TYPELESS:
+		case DXGI_FORMAT_R32G32B32_FLOAT:
+		case DXGI_FORMAT_R32G32B32_UINT:
+		case DXGI_FORMAT_R32G32B32_SINT:
+			assert(false);
+			return VK_FORMAT_UNDEFINED;
+		case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+		case DXGI_FORMAT_R16G16B16A16_FLOAT:
+			return VK_FORMAT_R16G16B16A16_SFLOAT;
+		case DXGI_FORMAT_R16G16B16A16_UNORM:
+			return VK_FORMAT_R16G16B16A16_UNORM;
+		case DXGI_FORMAT_R16G16B16A16_UINT:
+			return VK_FORMAT_R16G16B16A16_UINT;
+		case DXGI_FORMAT_R16G16B16A16_SNORM:
+			return VK_FORMAT_R16G16B16A16_SNORM;
+		case DXGI_FORMAT_R16G16B16A16_SINT:
+			return VK_FORMAT_R16G16B16A16_SINT;
+		case DXGI_FORMAT_R32G32_TYPELESS:
+		case DXGI_FORMAT_R32G32_FLOAT:
+			return VK_FORMAT_R32G32_SFLOAT;
+		case DXGI_FORMAT_R32G32_UINT:
+			return VK_FORMAT_R32G32_UINT;
+		case DXGI_FORMAT_R32G32_SINT:
+			return VK_FORMAT_R32G32_SINT;
+		case DXGI_FORMAT_R32G8X24_TYPELESS:
+		case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+		case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS:
+		case DXGI_FORMAT_X32_TYPELESS_G8X24_UINT:
+		case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+		case DXGI_FORMAT_R10G10B10A2_UNORM:
+		case DXGI_FORMAT_R10G10B10A2_UINT:
+		case DXGI_FORMAT_R11G11B10_FLOAT:
+			assert(false);
+			return VK_FORMAT_UNDEFINED;
+		case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+		case DXGI_FORMAT_R8G8B8A8_UNORM:
+			return VK_FORMAT_R8G8B8A8_UNORM;
+		case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+			return VK_FORMAT_R8G8B8A8_SRGB;
+		case DXGI_FORMAT_R8G8B8A8_UINT:
+			return VK_FORMAT_R8G8B8A8_UINT;
+		case DXGI_FORMAT_R8G8B8A8_SNORM:
+			return VK_FORMAT_R8G8B8A8_SNORM;
+		case DXGI_FORMAT_R8G8B8A8_SINT:
+			return VK_FORMAT_R8G8B8A8_SINT;
+		case DXGI_FORMAT_R16G16_TYPELESS:
+		case DXGI_FORMAT_R16G16_FLOAT:
+			return VK_FORMAT_R16G16_SFLOAT;
+		case DXGI_FORMAT_R16G16_UNORM:
+			return VK_FORMAT_R16G16_UNORM;
+		case DXGI_FORMAT_R16G16_UINT:
+			return VK_FORMAT_R16G16_UINT;
+		case DXGI_FORMAT_R16G16_SNORM:
+			return VK_FORMAT_R16G16_SNORM;
+		case DXGI_FORMAT_R16G16_SINT:
+			return VK_FORMAT_R16G16_SINT;
+		case DXGI_FORMAT_R32_TYPELESS:
+			return VK_FORMAT_R32_SFLOAT;
+		case DXGI_FORMAT_D32_FLOAT:
+			return VK_FORMAT_D32_SFLOAT;
+		case DXGI_FORMAT_R32_FLOAT:
+			return VK_FORMAT_R32_SFLOAT;
+		case DXGI_FORMAT_R32_UINT:
+			return VK_FORMAT_R32_UINT;
+		case DXGI_FORMAT_R32_SINT:
+			return VK_FORMAT_R32_SINT;
+		case DXGI_FORMAT_R24G8_TYPELESS:
+			assert(false);
+			return VK_FORMAT_UNDEFINED;
+		case DXGI_FORMAT_D24_UNORM_S8_UINT:
+			return VK_FORMAT_D24_UNORM_S8_UINT;
+		case DXGI_FORMAT_R24_UNORM_X8_TYPELESS:
+		case DXGI_FORMAT_X24_TYPELESS_G8_UINT:
+			assert(false);
+			return VK_FORMAT_UNDEFINED;
+		case DXGI_FORMAT_R8G8_TYPELESS:
+		case DXGI_FORMAT_R8G8_UNORM:
+			return VK_FORMAT_R8G8_UNORM;
+		case DXGI_FORMAT_R8G8_UINT:
+			return VK_FORMAT_R8G8_UINT;
+		case DXGI_FORMAT_R8G8_SNORM:
+			return VK_FORMAT_R8G8_SNORM;
+		case DXGI_FORMAT_R8G8_SINT:
+			return VK_FORMAT_R8G8_SINT;
+		case DXGI_FORMAT_R16_TYPELESS:
+		case DXGI_FORMAT_R16_FLOAT:
+			return VK_FORMAT_R16_SFLOAT;
+		case DXGI_FORMAT_D16_UNORM:
+			return VK_FORMAT_D16_UNORM;
+		case DXGI_FORMAT_R16_UNORM:
+			return VK_FORMAT_R16_UNORM;
+		case DXGI_FORMAT_R16_UINT:
+			return VK_FORMAT_R16_UINT;
+		case DXGI_FORMAT_R16_SNORM:
+			return VK_FORMAT_R16_SNORM;
+		case DXGI_FORMAT_R16_SINT:
+			return VK_FORMAT_R16_SINT;
+		case DXGI_FORMAT_R8_TYPELESS:
+		case DXGI_FORMAT_R8_UNORM:
+			return VK_FORMAT_R8_UNORM;
+		case DXGI_FORMAT_R8_UINT:
+			return VK_FORMAT_R8_UINT;
+		case DXGI_FORMAT_R8_SNORM:
+			return VK_FORMAT_R8_SNORM;
+		case DXGI_FORMAT_R8_SINT:
+			return VK_FORMAT_R8_SINT;
+		case DXGI_FORMAT_A8_UNORM:
+			return VK_FORMAT_A8_UNORM;
+		case DXGI_FORMAT_R1_UNORM:
+		case DXGI_FORMAT_R9G9B9E5_SHAREDEXP:
+		case DXGI_FORMAT_R8G8_B8G8_UNORM:
+		case DXGI_FORMAT_G8R8_G8B8_UNORM:
+			assert(false);
+			return VK_FORMAT_UNDEFINED;
+		case DXGI_FORMAT_BC1_TYPELESS:
+		case DXGI_FORMAT_BC1_UNORM:
+			return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+		case DXGI_FORMAT_BC1_UNORM_SRGB:
+			return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
+		case DXGI_FORMAT_BC2_TYPELESS:
+		case DXGI_FORMAT_BC2_UNORM:
+			return VK_FORMAT_BC2_UNORM_BLOCK;
+		case DXGI_FORMAT_BC2_UNORM_SRGB:
+			return VK_FORMAT_BC2_SRGB_BLOCK;
+		case DXGI_FORMAT_BC3_TYPELESS:
+		case DXGI_FORMAT_BC3_UNORM:
+			return VK_FORMAT_BC3_UNORM_BLOCK;
+		case DXGI_FORMAT_BC3_UNORM_SRGB:
+			return VK_FORMAT_BC3_SRGB_BLOCK;
+		case DXGI_FORMAT_BC4_TYPELESS:
+		case DXGI_FORMAT_BC4_UNORM:
+			return VK_FORMAT_BC4_UNORM_BLOCK;
+		case DXGI_FORMAT_BC4_SNORM:
+			return VK_FORMAT_BC4_SNORM_BLOCK;
+		case DXGI_FORMAT_BC5_TYPELESS:
+		case DXGI_FORMAT_BC5_UNORM:
+			return VK_FORMAT_BC5_UNORM_BLOCK;
+		case DXGI_FORMAT_BC5_SNORM:
+			return VK_FORMAT_BC5_SNORM_BLOCK;
+		case DXGI_FORMAT_B5G6R5_UNORM:
+			return VK_FORMAT_B5G6R5_UNORM_PACK16;
+		case DXGI_FORMAT_B5G5R5A1_UNORM:
+			return VK_FORMAT_B5G5R5A1_UNORM_PACK16;
+		case DXGI_FORMAT_B8G8R8A8_UNORM:
+		case DXGI_FORMAT_B8G8R8X8_UNORM:
+			return VK_FORMAT_B8G8R8A8_UNORM;
+		case DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM:
+			assert(false);
+			return VK_FORMAT_UNDEFINED;
+		case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+		case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+		case DXGI_FORMAT_B8G8R8X8_TYPELESS:
+		case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
+			return VK_FORMAT_B8G8R8A8_SRGB;
+		case DXGI_FORMAT_BC6H_TYPELESS:
+		case DXGI_FORMAT_BC6H_UF16:
+			return VK_FORMAT_BC6H_UFLOAT_BLOCK;
+		case DXGI_FORMAT_BC6H_SF16:
+			return VK_FORMAT_BC6H_SFLOAT_BLOCK;
+		case DXGI_FORMAT_BC7_TYPELESS:
+		case DXGI_FORMAT_BC7_UNORM:
+			return VK_FORMAT_BC7_UNORM_BLOCK;
+		case DXGI_FORMAT_BC7_UNORM_SRGB:
+			return VK_FORMAT_BC7_SRGB_BLOCK;
+		case DXGI_FORMAT_AYUV:
+		case DXGI_FORMAT_Y410:
+		case DXGI_FORMAT_Y416:
+		case DXGI_FORMAT_NV12:
+		case DXGI_FORMAT_P010:
+		case DXGI_FORMAT_P016:
+		case DXGI_FORMAT_420_OPAQUE:
+		case DXGI_FORMAT_YUY2:
+		case DXGI_FORMAT_Y210:
+		case DXGI_FORMAT_Y216:
+		case DXGI_FORMAT_NV11:
+		case DXGI_FORMAT_AI44:
+		case DXGI_FORMAT_IA44:
+		case DXGI_FORMAT_P8:
+		case DXGI_FORMAT_A8P8:
+		case DXGI_FORMAT_B4G4R4A4_UNORM:
+		case DXGI_FORMAT_P208:
+		case DXGI_FORMAT_V208:
+		case DXGI_FORMAT_V408:
+		case DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE:
+		case DXGI_FORMAT_SAMPLER_FEEDBACK_MIP_REGION_USED_OPAQUE:
+		case DXGI_FORMAT_FORCE_UINT:
+		default:
+			assert(false);
+			return VK_FORMAT_UNDEFINED;
+	}
+}
+
 static size_t get_image_size_bc(uint32_t width, uint32_t height, uint32_t levels, uint32_t block_size)
 {
 	size_t result = 0;
@@ -377,14 +582,16 @@ bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAlloca
 
 	bool has_dx10 = header->ddspf.dwFourCC == fourcc("DX10");
 
+	DDS_HEADER_DXT10* header_dx10 = has_dx10 ?  (DDS_HEADER_DXT10*)(header + 1) : nullptr;
+
 	if (has_dx10)
 	{
 		printf("DX10 extension not supported\n");
-		return false;
+		//return false;
 	}
 
 	bool complex = header->dwCaps & DDSCAPS_COMPLEX;
-	bool is_cubemap = header->dwCaps & DDSCAPS_COMPLEX && header->dwCaps2 & DDSCAPS2_CUBEMAP;
+	bool is_cubemap = has_dx10 ? (header_dx10->miscFlag & DDS_RESOURCE_MISC_TEXTURECUBE): (header->dwCaps& DDSCAPS_COMPLEX) && (header->dwCaps2 & DDSCAPS2_CUBEMAP);
 	if (is_cubemap)
 	{
 		assert(header->dwCaps2 & DDSCAPS2_CUBEMAP_POSITIVEX);
@@ -397,9 +604,9 @@ bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAlloca
 
 	bool is_volume = header->dwCaps & DDSCAPS_COMPLEX && header->dwCaps2 & DDSCAPS2_VOLUME;
 
-	size_t file_image_size = data.size() - sizeof(uint32_t) - sizeof(DDS_HEADER);
+	size_t file_image_size = data.size() - sizeof(uint32_t) - sizeof(DDS_HEADER) - (has_dx10 ? sizeof(DDS_HEADER_DXT10) : 0);
 
-	VkFormat format = get_format(header, is_srgb);
+	VkFormat format = has_dx10 ? get_format(header_dx10->dxgiFormat) : get_format(header, is_srgb);
 	if (format == VK_FORMAT_UNDEFINED)
 	{
 		printf("Unsupported format\n");
@@ -438,7 +645,7 @@ bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAlloca
 	void* mapped = scratch.map();
 	if (!is_compressed && rgb_bit_count == 24)
 	{
-		uint32_t src_data_start = sizeof(uint32_t) + sizeof(DDS_HEADER);
+		uint32_t src_data_start = sizeof(uint32_t) + sizeof(DDS_HEADER) + (has_dx10 ? sizeof(DDS_HEADER_DXT10) : 0);
 		uint8_t* write_ptr = (uint8_t*)mapped;
 		for (uint32_t i = 0; i < image_size; i += 3)
 		{
@@ -450,7 +657,8 @@ bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAlloca
 	}
 	else
 	{
-		memcpy(mapped, header + 1, image_size);
+		uint8_t* data_start = (uint8_t*)header + sizeof(DDS_HEADER) + (has_dx10 ? sizeof(DDS_HEADER_DXT10) : 0);
+		memcpy(mapped, data_start, image_size);
 	}
 	scratch.unmap();
 
