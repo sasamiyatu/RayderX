@@ -221,6 +221,7 @@ VkDevice create_device(VkInstance instance, VkPhysicalDevice physical_device, ui
 	VkPhysicalDeviceVulkan13Features features13{
 		.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
 		.pNext = &features12,
+		.shaderDemoteToHelperInvocation = VK_TRUE,
 		.synchronization2 = VK_TRUE,
 		.dynamicRendering = VK_TRUE,
 	};
@@ -239,6 +240,7 @@ VkDevice create_device(VkInstance instance, VkPhysicalDevice physical_device, ui
 	};
 
 	VkPhysicalDeviceFeatures features{
+		.sampleRateShading = VK_TRUE,
 		.samplerAnisotropy = VK_TRUE,
 	};
 
@@ -383,9 +385,6 @@ VmaAllocator create_allocator(VkInstance instance, VkPhysicalDevice physical_dev
 	return allocator;
 }
 
-
-
-
 VkPipeline create_shadowmap_pipeline(VkDevice device, std::initializer_list<Shader> shaders, VkPipelineLayout layout, VkFormat depth_format)
 {
 	std::vector<VkPipelineShaderStageCreateInfo> shader_stages(shaders.size());
@@ -485,7 +484,11 @@ VkPipeline create_shadowmap_pipeline(VkDevice device, std::initializer_list<Shad
 }
 
 VkPipeline create_pipeline(VkDevice device, std::initializer_list<Shader> shaders, VkPipelineLayout layout, std::initializer_list<VkFormat> color_attachment_formats, 
-	VkFormat depth_format = VK_FORMAT_UNDEFINED, VkSampleCountFlagBits sample_count = VK_SAMPLE_COUNT_1_BIT,
+	VkFormat depth_format = VK_FORMAT_UNDEFINED, 
+	VkPipelineMultisampleStateCreateInfo multisample_state = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+		.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+	},
 	VkPipelineDepthStencilStateCreateInfo depth_info = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
 		.depthTestEnable = VK_TRUE,
@@ -495,7 +498,9 @@ VkPipeline create_pipeline(VkDevice device, std::initializer_list<Shader> shader
 	VkPipelineColorBlendAttachmentState blend_state = {
 		.blendEnable = VK_FALSE,
 		.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-	})
+	},
+	VkCullModeFlags cull_mode = VK_CULL_MODE_BACK_BIT
+	)
 {
 	std::vector<VkPipelineShaderStageCreateInfo> shader_stages(shaders.size());
 	std::vector<VkShaderModuleCreateInfo> module_info(shaders.size());
@@ -539,14 +544,9 @@ VkPipeline create_pipeline(VkDevice device, std::initializer_list<Shader> shader
 	VkPipelineRasterizationStateCreateInfo rasterization_state{
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
 		.polygonMode = VK_POLYGON_MODE_FILL,
-		.cullMode = VK_CULL_MODE_BACK_BIT,
+		.cullMode = cull_mode,
 		.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
 		.lineWidth = 1.0f,
-	};
-
-	VkPipelineMultisampleStateCreateInfo multisample_state{
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-		.rasterizationSamples = sample_count,
 	};
 
 	std::vector<VkDynamicState> dynamic_states = {
@@ -1100,7 +1100,7 @@ int main(int argc, char** argv)
 		VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, environment.vertices.data());
 
 	//constexpr float camera_fov = glm::radians(20.0f);
-	constexpr float camera_fov = glm::radians(9.0f);
+	constexpr float camera_fov = glm::radians(15.0f);
 	OrbitCamera main_camera{
 		.distance = 3.1f,
 		.fov = camera_fov,
@@ -1259,28 +1259,70 @@ int main(int argc, char** argv)
 	FAIL_ON_ERROR(load_shader(vertex_shader, compiler, device, "forward.hlsl", "vs_main", VK_SHADER_STAGE_VERTEX_BIT));
 	FAIL_ON_ERROR(load_shader(fragment_shader, compiler, device, "forward.hlsl", "fs_main", VK_SHADER_STAGE_FRAGMENT_BIT));
 	Program forward_program = create_program(device, { vertex_shader, fragment_shader }, true);
-	VkPipeline pipeline = create_pipeline(device, { vertex_shader, fragment_shader }, forward_program.pipeline_layout, {RENDER_TARGET_FORMAT, LINEAR_DEPTH_FORMAT}, DEPTH_FORMAT, MSAA);
+	VkPipeline pipeline = create_pipeline(device, { vertex_shader, fragment_shader }, forward_program.pipeline_layout, {RENDER_TARGET_FORMAT, LINEAR_DEPTH_FORMAT}, DEPTH_FORMAT, 
+		{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+			.rasterizationSamples = MSAA,
+		});
 
 	Shader gltf_vertex_shader{};
 	Shader gltf_fragment_shader{};
 	FAIL_ON_ERROR(load_shader(gltf_vertex_shader, compiler, device, "forward_gltf.hlsl", "vs_main", VK_SHADER_STAGE_VERTEX_BIT));
 	FAIL_ON_ERROR(load_shader(gltf_fragment_shader, compiler, device, "forward_gltf.hlsl", "fs_main", VK_SHADER_STAGE_FRAGMENT_BIT));
 	Program forward_gltf_program = create_program(device, { gltf_vertex_shader, gltf_fragment_shader }, true);
-	VkPipeline forward_gltf_pipeline = create_pipeline(device, { gltf_vertex_shader, gltf_fragment_shader }, forward_gltf_program.pipeline_layout, { RENDER_TARGET_FORMAT, LINEAR_DEPTH_FORMAT }, DEPTH_FORMAT, MSAA);
+	VkPipeline forward_gltf_pipeline = create_pipeline(device, { gltf_vertex_shader, gltf_fragment_shader }, forward_gltf_program.pipeline_layout, { RENDER_TARGET_FORMAT, LINEAR_DEPTH_FORMAT }, DEPTH_FORMAT,
+		{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+			.rasterizationSamples = MSAA,
+		});
+
+	Shader forward_pbr_vertex_shader{};
+	Shader forward_pbr_fragment_shader{};
+	FAIL_ON_ERROR(load_shader(forward_pbr_vertex_shader, compiler, device, "forward_pbr.hlsl", "vs_main", VK_SHADER_STAGE_VERTEX_BIT));
+	FAIL_ON_ERROR(load_shader(forward_pbr_fragment_shader, compiler, device, "forward_pbr.hlsl", "fs_main", VK_SHADER_STAGE_FRAGMENT_BIT));
+	Program forward_pbr_program = create_program(device, { forward_pbr_vertex_shader, forward_pbr_fragment_shader }, true);
+	VkPipeline forward_pbr_pipeline = create_pipeline(device, { forward_pbr_vertex_shader, forward_pbr_fragment_shader }, forward_pbr_program.pipeline_layout, { RENDER_TARGET_FORMAT }, DEPTH_FORMAT, 
+		{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+			.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+		},
+		{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+			.depthTestEnable = VK_TRUE,
+			//.depthWriteEnable = VK_TRUE,
+			.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+		},
+		{
+			.blendEnable = VK_TRUE,
+			.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+			.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+			.colorBlendOp = VK_BLEND_OP_ADD,
+			.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT,
+		},
+		VK_CULL_MODE_NONE
+		);
 
 	Shader gltf_eyes_vertex_shader{};
 	Shader gltf_eyes_fragment_shader{};
 	FAIL_ON_ERROR(load_shader(gltf_eyes_vertex_shader, compiler, device, "forward_eyes_gltf.hlsl", "vs_main", VK_SHADER_STAGE_VERTEX_BIT));
 	FAIL_ON_ERROR(load_shader(gltf_eyes_fragment_shader, compiler, device, "forward_eyes_gltf.hlsl", "fs_main", VK_SHADER_STAGE_FRAGMENT_BIT));
 	Program forward_eyes_gltf_program = create_program(device, { gltf_eyes_vertex_shader, gltf_eyes_fragment_shader }, true);
-	VkPipeline forward_eyes_gltf_pipeline = create_pipeline(device, { gltf_eyes_vertex_shader, gltf_eyes_fragment_shader }, forward_eyes_gltf_program.pipeline_layout, { RENDER_TARGET_FORMAT, LINEAR_DEPTH_FORMAT }, DEPTH_FORMAT, MSAA);
+	VkPipeline forward_eyes_gltf_pipeline = create_pipeline(device, { gltf_eyes_vertex_shader, gltf_eyes_fragment_shader }, forward_eyes_gltf_program.pipeline_layout, { RENDER_TARGET_FORMAT, LINEAR_DEPTH_FORMAT }, DEPTH_FORMAT, 
+		{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+			.rasterizationSamples = MSAA,
+		});
 
 	Shader tearline_vertex_shader{};
 	Shader tearline_fragment_shader{};
 	FAIL_ON_ERROR(load_shader(tearline_vertex_shader, compiler, device, "tearline.hlsl", "vs_main", VK_SHADER_STAGE_VERTEX_BIT));
 	FAIL_ON_ERROR(load_shader(tearline_fragment_shader, compiler, device, "tearline.hlsl", "fs_main", VK_SHADER_STAGE_FRAGMENT_BIT));
 	Program tearline_program = create_program(device, { tearline_vertex_shader, tearline_fragment_shader }, true);
-	VkPipeline tearline_pipeline = create_pipeline(device, { tearline_vertex_shader, tearline_fragment_shader }, tearline_program.pipeline_layout, { RENDER_TARGET_FORMAT }, DEPTH_FORMAT, MSAA,
+	VkPipeline tearline_pipeline = create_pipeline(device, { tearline_vertex_shader, tearline_fragment_shader }, tearline_program.pipeline_layout, { RENDER_TARGET_FORMAT }, DEPTH_FORMAT, 
+		{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+			.rasterizationSamples = MSAA,
+		},
 		{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
 			.depthTestEnable = VK_TRUE,
@@ -1316,7 +1358,11 @@ int main(int argc, char** argv)
 	FAIL_ON_ERROR(load_shader(env_vertex_shader, compiler, device, "envmap.hlsl", "vs_main", VK_SHADER_STAGE_VERTEX_BIT));
 	FAIL_ON_ERROR(load_shader(env_fragment_shader, compiler, device, "envmap.hlsl", "fs_main", VK_SHADER_STAGE_FRAGMENT_BIT));
 	Program env_program = create_program(device, { env_vertex_shader, env_fragment_shader }, true);
-	VkPipeline env_pipeline = create_pipeline(device, { env_vertex_shader, env_fragment_shader }, env_program.pipeline_layout, { RENDER_TARGET_FORMAT }, VK_FORMAT_UNDEFINED, MSAA);
+	VkPipeline env_pipeline = create_pipeline(device, { env_vertex_shader, env_fragment_shader }, env_program.pipeline_layout, { RENDER_TARGET_FORMAT }, VK_FORMAT_UNDEFINED, 
+		{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+			.rasterizationSamples = MSAA,
+		});
 
 	Shader bloom_glare_detect_vertex_shader{};
 	Shader bloom_glare_detect_fragment_shader{};
@@ -1367,7 +1413,8 @@ int main(int argc, char** argv)
 	Program film_grain_program = create_program(device, { film_grain_vertex_shader, film_grain_fragment_shader }, true);
 	VkPipeline film_grain_pipeline = create_pipeline(device, { film_grain_vertex_shader, film_grain_fragment_shader }, film_grain_program.pipeline_layout, { swapchain.format });
 
-	Texture depth_texture = create_texture(device, allocator, swapchain.width, swapchain.height, 1, DEPTH_FORMAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 1, MSAA);
+	Texture depth_texture_msaa = create_texture(device, allocator, swapchain.width, swapchain.height, 1, DEPTH_FORMAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 1, MSAA);
+	Texture depth_texture = create_texture(device, allocator, swapchain.width, swapchain.height, 1, DEPTH_FORMAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 1);
 	Texture linear_depth_texture_msaa = create_texture(device, allocator, swapchain.width, swapchain.height, 1, LINEAR_DEPTH_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 1, MSAA);
 	Texture linear_depth_texture = create_texture(device, allocator, swapchain.width, swapchain.height, 1, LINEAR_DEPTH_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
 	Texture main_render_target = create_texture(device, allocator, swapchain.width, swapchain.height, 1, RENDER_TARGET_FORMAT,
@@ -1466,7 +1513,7 @@ int main(int argc, char** argv)
 				image_barrier(tmp_render_target.image,
 					VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
 					VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL),
-				image_barrier(depth_texture.image,
+				image_barrier(depth_texture_msaa.image,
 					VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
 					VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_ASPECT_DEPTH_BIT),
 				image_barrier(linear_depth_texture_msaa.image,
@@ -1555,7 +1602,7 @@ int main(int argc, char** argv)
 
 			for (const auto& d : mesh_draws)
 			{
-				if (materials[d.material_index].type == Material::EYES) continue;
+				if (materials[d.material_index].type == Material::EYES || materials[d.material_index].type == Material::STANDARD) continue;
 
 				struct {
 					glm::mat4 mvp;
@@ -1643,9 +1690,9 @@ int main(int argc, char** argv)
 					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
 					.imageView = main_render_target_msaa.view,
 					.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-					//.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT,
-					//.resolveImageView = main_render_target.view,
-					//.resolveImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+					.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT,
+					.resolveImageView = main_render_target.view,
+					.resolveImageLayout = VK_IMAGE_LAYOUT_GENERAL,
 					.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
 					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
 					.clearValue = {.color = {0.0f, 0.0f, 0.0f, 0.0f} }
@@ -1664,8 +1711,11 @@ int main(int argc, char** argv)
 				{
 					{
 						.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-						.imageView = depth_texture.view,
+						.imageView = depth_texture_msaa.view,
 						.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+						.resolveMode = VK_RESOLVE_MODE_MIN_BIT,
+						.resolveImageView = depth_texture.view,
+						.resolveImageLayout = VK_IMAGE_LAYOUT_GENERAL,
 						.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
 						.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
 						.clearValue = {.depthStencil = {.depth = 1.0f} }
@@ -1680,7 +1730,7 @@ int main(int argc, char** argv)
 			{
 				assert(d.material_index >= 0);
 				const Material& mat = materials[d.material_index];
-				if (mat.type == Material::EYE_OCCLUSION || mat.type == Material::TEARLINE) continue;
+				if (mat.type == Material::EYE_OCCLUSION || mat.type == Material::TEARLINE || mat.type == Material::STANDARD) continue;
 
 				assert(mat.basecolor_texture >= 0);
 				assert(mat.normal_texture >= 0);
@@ -1693,6 +1743,9 @@ int main(int argc, char** argv)
 				switch (mat.type)
 				{
 				case Material::STANDARD:
+				{
+					//continue;
+				}	break;
 				case Material::SKIN:
 				{
 					struct {
@@ -1815,7 +1868,7 @@ int main(int argc, char** argv)
 
 			VkRenderingAttachmentInfo depth_info{
 				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-				.imageView = depth_texture.view,
+				.imageView = depth_texture_msaa.view,
 				.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 				.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
 				.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -1905,72 +1958,6 @@ int main(int argc, char** argv)
 
 			vkCmdEndRendering(command_buffer);
 		}
-		{ // Do tearline
-			begin_rendering(command_buffer, swapchain.width, swapchain.height, {
-				{
-					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-					.imageView = main_render_target_msaa.view,
-					.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-					.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT,
-					.resolveImageView = main_render_target.view,
-					.resolveImageLayout = VK_IMAGE_LAYOUT_GENERAL,
-					.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-				}},
-				{
-					{
-						.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-						.imageView = depth_texture.view,
-						.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-						.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-						.storeOp = VK_ATTACHMENT_STORE_OP_NONE,
-					}
-				});
-
-			set_viewport_and_scissor(command_buffer, swapchain.width, swapchain.height);
-
-			vkCmdBindIndexBuffer(command_buffer, index_buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-
-#if 0
-			for (const auto& d : mesh_draws)
-			{
-				assert(d.material_index >= 0);
-				const Material& mat = materials[d.material_index];
-				if (mat.type != Material::TEARLINE) continue;
-
-				assert(mat.normal_texture >= 0);
-
-				const Mesh& mesh = meshes[d.mesh_index];
-
-				struct {
-					glm::mat4 viewproj;
-					glm::mat4 model;
-					glm::vec3 camera_pos;
-					float ambient = AMBIENT_INTENSITY;
-					glm::vec2 pixel_size;
-				} pc;
-
-				pc.viewproj = viewproj;
-				pc.model = d.transform;
-				pc.camera_pos = camera_pos;
-				pc.pixel_size = glm::vec2(1.0f / swapchain.width, 1.0f / swapchain.height);
-
-				DescriptorInfo descriptor_info[] = {
-					DescriptorInfo(vertex_buffer.buffer),
-					DescriptorInfo(anisotropic_sampler),
-					DescriptorInfo(linear_sampler),
-					DescriptorInfo(textures[mat.normal_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-					DescriptorInfo(linear_depth_texture.view, VK_IMAGE_LAYOUT_GENERAL),
-					DescriptorInfo(environment.reflection.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-				};
-
-				draw_with_pipeline_and_program(command_buffer, mesh, tearline_program, tearline_pipeline, pc, descriptor_info);
-			}
-#endif
-
-			vkCmdEndRendering(command_buffer);
-		}
-		
 
 		if (SSS_ENABLED)
 		{ // Do SSS
@@ -2043,6 +2030,117 @@ int main(int argc, char** argv)
 				vkCmdEndRendering(command_buffer);
 			}
 		}
+
+#if 1
+		{ // Do tearline
+			begin_rendering(command_buffer, swapchain.width, swapchain.height, {
+				{
+					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+					.imageView = main_render_target.view,
+					.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+					.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+				} },
+				{
+					{
+						.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+						.imageView = depth_texture.view,
+						.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+						.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+						.storeOp = VK_ATTACHMENT_STORE_OP_NONE,
+					}
+				});
+
+				set_viewport_and_scissor(command_buffer, swapchain.width, swapchain.height);
+
+				vkCmdBindIndexBuffer(command_buffer, index_buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
+				for (const auto& d : mesh_draws)
+				{
+					assert(d.material_index >= 0);
+					const Material& mat = materials[d.material_index];
+					if (mat.type != Material::STANDARD) continue;
+
+					assert(mat.normal_texture >= 0);
+
+					const Mesh& mesh = meshes[d.mesh_index];
+					struct {
+						glm::mat4 viewproj;
+						glm::mat4 model;
+						uint32_t n_lights;
+						glm::vec3 camera_pos;
+						float ambient = AMBIENT_INTENSITY;
+					} pc;
+
+					pc.viewproj = viewproj;
+					pc.model = d.transform;
+					pc.n_lights = (uint32_t)lights.lights.size();
+					pc.camera_pos = camera_pos;
+
+					DescriptorInfo descriptor_info[] = {
+						DescriptorInfo(vertex_buffer.buffer),
+						DescriptorInfo(anisotropic_sampler),
+						DescriptorInfo(linear_sampler),
+						DescriptorInfo(point_sampler),
+						DescriptorInfo(beckmann_lut.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+						DescriptorInfo(textures[mat.basecolor_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+						DescriptorInfo(textures[mat.normal_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+						DescriptorInfo(textures[mat.metallic_roughness_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+						DescriptorInfo(textures[mat.occlusion_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+						DescriptorInfo(lights.buffer.buffer),
+						DescriptorInfo(shadow_sampler),
+						DescriptorInfo(lights.lights[0].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
+						DescriptorInfo(lights.lights[1].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
+						DescriptorInfo(lights.lights[2].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
+						DescriptorInfo(lights.lights[3].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
+						DescriptorInfo(lights.lights[4].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
+						DescriptorInfo(environment.irradiance.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+					};
+
+					draw_with_pipeline_and_program(command_buffer, mesh, forward_pbr_program, forward_pbr_pipeline, pc, descriptor_info);
+				}
+
+#if 0
+				for (const auto& d : mesh_draws)
+				{
+					assert(d.material_index >= 0);
+					const Material& mat = materials[d.material_index];
+					if (mat.type != Material::TEARLINE) continue;
+
+					assert(mat.normal_texture >= 0);
+
+					const Mesh& mesh = meshes[d.mesh_index];
+
+					struct {
+						glm::mat4 viewproj;
+						glm::mat4 model;
+						glm::vec3 camera_pos;
+						float ambient = AMBIENT_INTENSITY;
+						glm::vec2 pixel_size;
+					} pc;
+
+					pc.viewproj = viewproj;
+					pc.model = d.transform;
+					pc.camera_pos = camera_pos;
+					pc.pixel_size = glm::vec2(1.0f / swapchain.width, 1.0f / swapchain.height);
+
+					DescriptorInfo descriptor_info[] = {
+						DescriptorInfo(vertex_buffer.buffer),
+						DescriptorInfo(anisotropic_sampler),
+						DescriptorInfo(linear_sampler),
+						DescriptorInfo(textures[mat.normal_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+						DescriptorInfo(linear_depth_texture.view, VK_IMAGE_LAYOUT_GENERAL),
+						DescriptorInfo(environment.reflection.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+					};
+
+					draw_with_pipeline_and_program(command_buffer, mesh, tearline_program, tearline_pipeline, pc, descriptor_info);
+				}
+#endif
+
+				vkCmdEndRendering(command_buffer);
+		}
+#endif
+
 
 		if (BLOOM_ENABLED)
 		{ // Do bloom
@@ -2509,6 +2607,7 @@ int main(int argc, char** argv)
 	lights.buffer.destroy();
 	vertex_buffer.destroy();
 	index_buffer.destroy();
+	depth_texture_msaa.destroy();
 	depth_texture.destroy();
 	linear_depth_texture.destroy();
 	linear_depth_texture_msaa.destroy();
@@ -2518,6 +2617,7 @@ int main(int argc, char** argv)
 	destroy_program(device, forward_program);
 	destroy_program(device, forward_gltf_program);
 	destroy_program(device, forward_eyes_gltf_program);
+	destroy_program(device, forward_pbr_program);
 	destroy_program(device, tearline_program);
 	destroy_program(device, tonemap_program);
 	destroy_program(device, shadowmap_program);
@@ -2543,6 +2643,7 @@ int main(int argc, char** argv)
 	vkDestroyPipeline(device, dof_blur_pipeline, nullptr);
 	vkDestroyPipeline(device, film_grain_pipeline, nullptr);
 	vkDestroyPipeline(device, tearline_pipeline, nullptr);
+	vkDestroyPipeline(device, forward_pbr_pipeline, nullptr);
 	vkDestroyCommandPool(device, command_pool, nullptr);
 	for (VkImageView view : views) vkDestroyImageView(device, view, nullptr);
 	vkDestroySwapchainKHR(device, swapchain.swapchain, nullptr);

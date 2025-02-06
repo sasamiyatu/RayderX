@@ -118,7 +118,7 @@ FSOutput fs_main(FSInput input)
     float current_linear_depth = 1.0 / input.position.w;
     float2 screen_uv = input.position.xy * push_constants.pixel_size;
     //screen_uv.y = 1 - screen_uv.y;
-    float sample_depth = linear_depth_texture.SampleLevel(LinearSampler, screen_uv, 0);
+    float sample_depth = linear_depth_texture.SampleLevel(LinearSampler, screen_uv, 0).r;
 
     float diff = sample_depth  - current_linear_depth;
 
