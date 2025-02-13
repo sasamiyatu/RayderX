@@ -321,9 +321,9 @@ VkFormat get_swapchain_format(VkPhysicalDevice physical_device, VkSurfaceKHR sur
 	VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &count, 0));
 	std::vector<VkSurfaceFormatKHR> formats(count);
 	VK_CHECK(vkGetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &count, formats.data()));
-
 	for (uint32_t i = 0; i < count; ++i)
-		if (formats[i].format == VK_FORMAT_R8G8B8A8_SRGB || formats[i].format == VK_FORMAT_B8G8R8A8_SRGB)
+		//if (formats[i].format == VK_FORMAT_R8G8B8A8_SRGB || formats[i].format == VK_FORMAT_B8G8R8A8_SRGB)
+		if (formats[i].format == VK_FORMAT_R8G8B8A8_UNORM || formats[i].format == VK_FORMAT_B8G8R8A8_UNORM)
 			return formats[i].format;
 
 	return formats[0].format;
@@ -349,7 +349,7 @@ void create_swapchain(Swapchain& swapchain, VkDevice device, VkPhysicalDevice ph
 		.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
 		.imageExtent = { width, height },
 		.imageArrayLayers = 1,
-		.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+		.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
 		.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
 		.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
 		.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
@@ -2742,7 +2742,7 @@ int main(int argc, char** argv)
 				DescriptorInfo(linear_sampler_wrap),
 				DescriptorInfo(noise_texture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
 				DescriptorInfo(tmp_render_target.view, VK_IMAGE_LAYOUT_GENERAL),
-				DescriptorInfo(main_render_target.view, VK_IMAGE_LAYOUT_GENERAL),
+				DescriptorInfo(views[image_index], VK_IMAGE_LAYOUT_GENERAL),
 			};
 
 			glm::uvec3 dispatch_size = get_dispatch_size(glm::uvec3(swapchain.width, swapchain.height, 1), glm::uvec3(8, 8, 1));
@@ -2752,33 +2752,6 @@ int main(int argc, char** argv)
 		}
 
 		vkCmdWriteTimestamp(command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, query_pool, 5);
-
-		{ // Blit
-			VkMemoryBarrier2 barrier = memory_barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
-			pipeline_barrier(command_buffer, { barrier }, {});
-
-			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, film_grain_pipeline);
-
-			VkImageBlit region{
-				.srcSubresource = {
-					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-					.mipLevel = 0,
-					.baseArrayLayer = 0,
-					.layerCount = 1,
-				},
-				.srcOffsets = {{0, 0, 0}, {(int32_t)swapchain.width, (int32_t)swapchain.height, 1}},
-				.dstSubresource = {
-					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-					.mipLevel = 0,
-					.baseArrayLayer = 0,
-					.layerCount = 1,
-				},
-				.dstOffsets = {{0, 0, 0}, {(int32_t)swapchain.width, (int32_t)swapchain.height, 1}},
-			};
-
-			vkCmdBlitImage(command_buffer, main_render_target.image, VK_IMAGE_LAYOUT_GENERAL, swapchain.images[image_index], VK_IMAGE_LAYOUT_GENERAL, 1, &region, VK_FILTER_LINEAR);
-		}
 
 		{ // Transition to present src
 			VkImageMemoryBarrier2 barrier = image_barrier(swapchain.images[image_index], 
