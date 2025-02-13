@@ -29,12 +29,22 @@
 #include "sdkmesh.h"
 #include "shaders.h"
 
+#define VSYNC 0
+#define PREFER_INTEGRATED_GPU 0
+#define USE_COMPUTE_POST_PROCESS 1
+
+#if PREFER_INTEGRATED_GPU == 1
+static constexpr VkPhysicalDeviceType PREFERRED_GPU_TYPE = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+#else
 static constexpr VkPhysicalDeviceType PREFERRED_GPU_TYPE = VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+#endif
 static constexpr VkFormat DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
 static constexpr VkFormat LINEAR_DEPTH_FORMAT = VK_FORMAT_R32_SFLOAT;
 static constexpr VkFormat RENDER_TARGET_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;
 static constexpr uint32_t SHADOWMAP_SIZE = 2048;
 static constexpr VkSampleCountFlagBits MSAA = VK_SAMPLE_COUNT_4_BIT;
+static constexpr uint32_t QUERY_POOL_MAX_QUERIES = 256;
+
 
 static constexpr float ENVIRONMENT_INTENSITY = 0.55f;
 static constexpr float AMBIENT_INTENSITY = 0.61f;
@@ -324,6 +334,12 @@ void create_swapchain(Swapchain& swapchain, VkDevice device, VkPhysicalDevice ph
 	VkFormat format = get_swapchain_format(physical_device, surface);
 	VkSurfaceCapabilitiesKHR surface_capabilities;
 	VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &surface_capabilities));
+
+	uint32_t count = 0;
+	vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &count, nullptr);
+	std::vector<VkPresentModeKHR> present_modes(count);
+	vkGetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &count, present_modes.data());
+
 	VkSwapchainCreateInfoKHR create_info{
 		.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
 		.pNext = nullptr,
@@ -333,11 +349,15 @@ void create_swapchain(Swapchain& swapchain, VkDevice device, VkPhysicalDevice ph
 		.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
 		.imageExtent = { width, height },
 		.imageArrayLayers = 1,
-		.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT /* | VK_IMAGE_USAGE_STORAGE_BIT*/,
+		.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 		.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
 		.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
 		.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+#if VSYNC == 1
 		.presentMode = VK_PRESENT_MODE_FIFO_KHR,
+#else
+		.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR,
+#endif
 		.clipped = VK_TRUE,
 		.oldSwapchain = VK_NULL_HANDLE
 	};
@@ -764,6 +784,29 @@ struct Lights
 	Buffer buffer;
 };
 
+glm::uvec3 get_dispatch_size(glm::uvec3 global_size, glm::uvec3 local_size)
+{
+	return (global_size + local_size - 1u) / local_size;
+}
+
+template <typename T>
+void dispatch(VkCommandBuffer cmd, const Program& program, glm::uvec3 size, const T& pc, const DescriptorInfo* descriptor_info)
+{
+	vkCmdPushConstants(cmd, program.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+	vkCmdPushDescriptorSetWithTemplateKHR(cmd, program.descriptor_update_template, program.pipeline_layout, 0, descriptor_info);
+	vkCmdDispatch(cmd, size.x, size.y, size.z);
+}
+
+bool load_shader_and_create_compute_program(Program& program, VkDevice device, const ShaderCompiler& compiler, const char* shader_path, const char* entry_point)
+{
+	Shader shader{};
+	if (!load_shader(shader, compiler, device, shader_path, entry_point, VK_SHADER_STAGE_COMPUTE_BIT))
+		return false;
+	program = create_program(device, { shader }, true);
+
+	return true;
+}
+
 int main(int argc, char** argv)
 {
 	if (argc != 2)
@@ -789,6 +832,8 @@ int main(int argc, char** argv)
 	VkPhysicalDevice physical_device = pick_physical_device(instance);
 	uint32_t queue_family = find_queue_family(physical_device);
 	VkDevice device = create_device(instance, physical_device, queue_family);
+	VkPhysicalDeviceProperties device_properties{};
+	vkGetPhysicalDeviceProperties(physical_device, &device_properties);
 	VkQueue queue = VK_NULL_HANDLE;
 	vkGetDeviceQueue(device, queue_family, 0, &queue);
 
@@ -910,6 +955,7 @@ int main(int argc, char** argv)
 		};
 
 		Material mat{
+			.type = Material::SKIN,
 			.basecolor_texture = (int)textures.size(),
 			.normal_texture = (int)textures.size() + 1,
 			.specular_texture = (int)textures.size() + 2,
@@ -1100,7 +1146,7 @@ int main(int argc, char** argv)
 		VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT, environment.vertices.data());
 
 	//constexpr float camera_fov = glm::radians(20.0f);
-	constexpr float camera_fov = glm::radians(15.0f);
+	constexpr float camera_fov = glm::radians(19.5f);
 	OrbitCamera main_camera{
 		.distance = 3.1f,
 		.fov = camera_fov,
@@ -1225,7 +1271,6 @@ int main(int argc, char** argv)
 		Texture glare_texture;
 		Texture tmp_render_targets[N_BLOOM_PASSES][2];
 	} bloom_resources;
-
 		
 	bloom_resources.glare_texture = create_texture(device, allocator, swapchain.width / 2, swapchain.height / 2, 1, RENDER_TARGET_FORMAT,
 		VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
@@ -1249,7 +1294,7 @@ int main(int argc, char** argv)
 	dof_resources.tmp_render_target = create_texture(device, allocator, swapchain.width, swapchain.height, 1, swapchain.format,
 		VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
 	dof_resources.coc_render_target = create_texture(device, allocator, swapchain.width, swapchain.height, 1, VK_FORMAT_R8_UNORM,
-		VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+		VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
 
 	Texture noise_texture;
 	FAIL_ON_ERROR(load_texture(noise_texture, "data/Noise.dds", device, allocator, command_pool, command_buffer, queue, scratch_buffer, false));
@@ -1353,6 +1398,11 @@ int main(int argc, char** argv)
 	Program sss_program = create_program(device, { sss_vertex_shader, sss_fragment_shader }, true);
 	VkPipeline sss_pipeline = create_pipeline(device, { sss_vertex_shader, sss_fragment_shader }, sss_program.pipeline_layout, { RENDER_TARGET_FORMAT }, VK_FORMAT_UNDEFINED);
 
+	Shader sss_compute_shader{};
+	FAIL_ON_ERROR(load_shader(sss_compute_shader, compiler, device, "sss_comp.hlsl", "cs_main", VK_SHADER_STAGE_COMPUTE_BIT));
+	Program sss_compute_program = create_program(device, { sss_compute_shader }, true);
+	VkPipeline sss_compute_pipline = create_compute_pipeline(device, sss_compute_shader, sss_compute_program.pipeline_layout);
+
 	Shader env_vertex_shader{};
 	Shader env_fragment_shader{};
 	FAIL_ON_ERROR(load_shader(env_vertex_shader, compiler, device, "envmap.hlsl", "vs_main", VK_SHADER_STAGE_VERTEX_BIT));
@@ -1371,6 +1421,11 @@ int main(int argc, char** argv)
 	Program bloom_glare_detect_program = create_program(device, { bloom_glare_detect_vertex_shader, bloom_glare_detect_fragment_shader }, true);
 	VkPipeline bloom_glare_detect_pipeline = create_pipeline(device, { bloom_glare_detect_vertex_shader, bloom_glare_detect_fragment_shader }, bloom_glare_detect_program.pipeline_layout, { RENDER_TARGET_FORMAT });
 
+	Shader bloom_glare_detect_compute_shader{};
+	FAIL_ON_ERROR(load_shader(bloom_glare_detect_compute_shader, compiler, device, "bloom_glare_detect.hlsl", "cs_main", VK_SHADER_STAGE_COMPUTE_BIT));
+	Program bloom_glare_detect_compute_program = create_program(device, { bloom_glare_detect_compute_shader }, true);
+	VkPipeline bloom_glare_detect_compute_pipeline = create_compute_pipeline(device, bloom_glare_detect_compute_shader, bloom_glare_detect_compute_program.pipeline_layout);
+
 	Shader bloom_blur_vertex_shader{};
 	Shader bloom_blur_fragment_shader{};
 	FAIL_ON_ERROR(load_shader(bloom_blur_vertex_shader, compiler, device, "bloom.hlsl", "vs_main", VK_SHADER_STAGE_VERTEX_BIT));
@@ -1378,12 +1433,20 @@ int main(int argc, char** argv)
 	Program bloom_blur_program = create_program(device, { bloom_blur_vertex_shader, bloom_blur_fragment_shader }, true);
 	VkPipeline bloom_blur_pipeline = create_pipeline(device, { bloom_blur_vertex_shader, bloom_blur_fragment_shader }, bloom_blur_program.pipeline_layout, { RENDER_TARGET_FORMAT });
 
+	Program bloom_blur_compute_program{};
+	load_shader_and_create_compute_program(bloom_blur_compute_program, device, compiler, "bloom_blur.hlsl", "cs_main");
+	VkPipeline bloom_blur_compute_pipeline = create_compute_pipeline(device, bloom_blur_compute_program.shaders[0], bloom_blur_compute_program.pipeline_layout);
+
 	Shader bloom_combine_vertex_shader{};
 	Shader bloom_combine_fragment_shader{};
 	FAIL_ON_ERROR(load_shader(bloom_combine_vertex_shader, compiler, device, "bloom.hlsl", "vs_main", VK_SHADER_STAGE_VERTEX_BIT));
 	FAIL_ON_ERROR(load_shader(bloom_combine_fragment_shader, compiler, device, "bloom.hlsl", "combine", VK_SHADER_STAGE_FRAGMENT_BIT));
 	Program bloom_combine_program = create_program(device, { bloom_combine_vertex_shader, bloom_combine_fragment_shader }, true);
-	VkPipeline bloom_combine_pipeline = create_pipeline(device, { bloom_combine_vertex_shader, bloom_combine_fragment_shader }, bloom_combine_program.pipeline_layout, { swapchain.format });
+	VkPipeline bloom_combine_pipeline = create_pipeline(device, { bloom_combine_vertex_shader, bloom_combine_fragment_shader }, bloom_combine_program.pipeline_layout, { RENDER_TARGET_FORMAT });
+
+	Program bloom_compose_compute_program{};
+	load_shader_and_create_compute_program(bloom_compose_compute_program, device, compiler, "bloom_compose.hlsl", "cs_main");
+	VkPipeline bloom_compose_compute_pipeline = create_compute_pipeline(device, bloom_compose_compute_program.shaders[0], bloom_compose_compute_program.pipeline_layout);
 
 	Shader tonemap_vertex_shader{};
 	Shader tonemap_fragment_shader{};
@@ -1399,28 +1462,40 @@ int main(int argc, char** argv)
 	Program dof_coc_program = create_program(device, { dof_coc_vertex_shader, dof_coc_fragment_shader }, true);
 	VkPipeline dof_coc_pipeline = create_pipeline(device, { dof_coc_vertex_shader, dof_coc_fragment_shader }, dof_coc_program.pipeline_layout, { dof_resources.coc_render_target.format });
 
+	Program dof_coc_compute_program{};
+	load_shader_and_create_compute_program(dof_coc_compute_program, device, compiler, "dof_coc.hlsl", "cs_main");
+	VkPipeline dof_coc_compute_pipeline = create_compute_pipeline(device, dof_coc_compute_program.shaders[0], dof_coc_compute_program.pipeline_layout);
+
 	Shader dof_blur_vertex_shader{};
 	Shader dof_blur_fragment_shader{};
 	FAIL_ON_ERROR(load_shader(dof_blur_vertex_shader, compiler, device, "depth_of_field.hlsl", "vs_main", VK_SHADER_STAGE_VERTEX_BIT));
 	FAIL_ON_ERROR(load_shader(dof_blur_fragment_shader, compiler, device, "depth_of_field.hlsl", "blur", VK_SHADER_STAGE_FRAGMENT_BIT));
 	Program dof_blur_program = create_program(device, { dof_blur_vertex_shader, dof_blur_fragment_shader }, true);
-	VkPipeline dof_blur_pipeline = create_pipeline(device, { dof_blur_vertex_shader, dof_blur_fragment_shader }, dof_coc_program.pipeline_layout, { swapchain.format });
+	VkPipeline dof_blur_pipeline = create_pipeline(device, { dof_blur_vertex_shader, dof_blur_fragment_shader }, dof_coc_program.pipeline_layout, { RENDER_TARGET_FORMAT });
+
+	Program dof_blur_compute_program{};
+	load_shader_and_create_compute_program(dof_blur_compute_program, device, compiler, "dof_blur.hlsl", "cs_main");
+	VkPipeline dof_blur_compute_pipeline = create_compute_pipeline(device, dof_blur_compute_program.shaders[0], dof_blur_compute_program.pipeline_layout);
 
 	Shader film_grain_vertex_shader{};
 	Shader film_grain_fragment_shader{};
 	FAIL_ON_ERROR(load_shader(film_grain_vertex_shader, compiler, device, "film_grain.hlsl", "vs_main", VK_SHADER_STAGE_VERTEX_BIT));
 	FAIL_ON_ERROR(load_shader(film_grain_fragment_shader, compiler, device, "film_grain.hlsl", "film_grain", VK_SHADER_STAGE_FRAGMENT_BIT));
 	Program film_grain_program = create_program(device, { film_grain_vertex_shader, film_grain_fragment_shader }, true);
-	VkPipeline film_grain_pipeline = create_pipeline(device, { film_grain_vertex_shader, film_grain_fragment_shader }, film_grain_program.pipeline_layout, { swapchain.format });
+	VkPipeline film_grain_pipeline = create_pipeline(device, { film_grain_vertex_shader, film_grain_fragment_shader }, film_grain_program.pipeline_layout, { RENDER_TARGET_FORMAT });
+
+	Program film_grain_compute_program{};
+	load_shader_and_create_compute_program(film_grain_compute_program, device, compiler, "film_grain_comp.hlsl", "cs_main");
+	VkPipeline film_grain_compute_pipeline = create_compute_pipeline(device, film_grain_compute_program.shaders[0], film_grain_compute_program.pipeline_layout);
 
 	Texture depth_texture_msaa = create_texture(device, allocator, swapchain.width, swapchain.height, 1, DEPTH_FORMAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 1, MSAA);
 	Texture depth_texture = create_texture(device, allocator, swapchain.width, swapchain.height, 1, DEPTH_FORMAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 1);
 	Texture linear_depth_texture_msaa = create_texture(device, allocator, swapchain.width, swapchain.height, 1, LINEAR_DEPTH_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 1, MSAA);
-	Texture linear_depth_texture = create_texture(device, allocator, swapchain.width, swapchain.height, 1, LINEAR_DEPTH_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+	Texture linear_depth_texture = create_texture(device, allocator, swapchain.width, swapchain.height, 1, LINEAR_DEPTH_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
 	Texture main_render_target = create_texture(device, allocator, swapchain.width, swapchain.height, 1, RENDER_TARGET_FORMAT,
-		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
 	Texture tmp_render_target = create_texture(device, allocator, swapchain.width, swapchain.height, 1, RENDER_TARGET_FORMAT,
-		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
 	Texture main_render_target_msaa = create_texture(device, allocator, swapchain.width, swapchain.height, 1, RENDER_TARGET_FORMAT,
 		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 1, MSAA);
 
@@ -1472,10 +1547,23 @@ int main(int argc, char** argv)
 		VK_CHECK(vkCreateSampler(device, &create_info, nullptr, &shadow_sampler));
 	}
 
+	VkQueryPool query_pool = VK_NULL_HANDLE;
+	{
+		VkQueryPoolCreateInfo create_info{
+			.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+			.queryType = VK_QUERY_TYPE_TIMESTAMP,
+			.queryCount = QUERY_POOL_MAX_QUERIES,
+		};
+		VK_CHECK(vkCreateQueryPool(device, &create_info, nullptr, &query_pool));
+	}
+
 	glm::mat4 view = main_camera.compute_view();
 	glm::mat4 proj = main_camera.projection;
 	glm::mat4 viewproj = proj * view;
 	glm::vec3 camera_pos = glm::inverse(view)[3];
+
+	double smoothed_frametime_ms = 0.0f;
+	double post_process_ms = 0.0f;
 
     bool running = true;
 	while (running)
@@ -1499,11 +1587,14 @@ int main(int argc, char** argv)
 		};
 		VK_CHECK(vkBeginCommandBuffer(command_buffer, &begin_info));
 
+		vkCmdResetQueryPool(command_buffer, query_pool, 0, QUERY_POOL_MAX_QUERIES);
+		vkCmdWriteTimestamp(command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, query_pool, 0);
+
 		{ // Change image layouts
 			VkImageMemoryBarrier2 barriers[] = {
 				image_barrier(swapchain.images[image_index],
-					VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
-					VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL),
+					VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+					VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL),
 				image_barrier(main_render_target_msaa.image,
 					VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
 					VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL),
@@ -1959,9 +2050,44 @@ int main(int argc, char** argv)
 			vkCmdEndRendering(command_buffer);
 		}
 
+		vkCmdWriteTimestamp(command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, query_pool, 1);
+
 		if (SSS_ENABLED)
 		{ // Do SSS
+#if USE_COMPUTE_POST_PROCESS == 1
+			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, sss_compute_pipline);
 
+			for (uint32_t pass = 0; pass < 2; ++pass)
+			{
+				VkMemoryBarrier2 barrier = memory_barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+					VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT);
+
+				pipeline_barrier(command_buffer, { barrier }, {});
+
+				struct {
+					glm::vec2 dir;
+					float sss_width = SSS_WIDTH;
+					glm::vec2 resolution;
+				} pc;
+
+				pc.dir = pass == 0 ? glm::vec2(1.0f, 0.0f) : glm::vec2(0.0f, 1.0f);
+				pc.resolution = glm::vec2(swapchain.width, swapchain.height);
+
+				DescriptorInfo descriptor_info[] = {
+					DescriptorInfo(linear_sampler),
+					//DescriptorInfo(point_sampler),
+					DescriptorInfo(pass == 0 ? main_render_target.view : tmp_render_target.view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(linear_depth_texture.view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(pass == 0 ? tmp_render_target.view : main_render_target.view, VK_IMAGE_LAYOUT_GENERAL),
+				};
+
+				vkCmdPushConstants(command_buffer, sss_compute_program.pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+				vkCmdPushDescriptorSetWithTemplateKHR(command_buffer, sss_compute_program.descriptor_update_template, sss_compute_program.pipeline_layout, 0, descriptor_info);
+
+				glm::uvec3 dispatch_size = get_dispatch_size(glm::uvec3(swapchain.width, swapchain.height, 1), glm::uvec3(8, 8, 1));
+				vkCmdDispatch(command_buffer, dispatch_size.x, dispatch_size.y, dispatch_size.z);
+			}
+#else
 			for (uint32_t pass = 0; pass < 2; ++pass)
 			{
 				VkMemoryBarrier2 barrier = memory_barrier(VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -2029,126 +2155,19 @@ int main(int argc, char** argv)
 
 				vkCmdEndRendering(command_buffer);
 			}
+#endif
 		}
 
-#if 1
-		{ // Do tearline
-			begin_rendering(command_buffer, swapchain.width, swapchain.height, {
-				{
-					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-					.imageView = main_render_target.view,
-					.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-					.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-				} },
-				{
-					{
-						.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-						.imageView = depth_texture.view,
-						.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-						.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-						.storeOp = VK_ATTACHMENT_STORE_OP_NONE,
-					}
-				});
-
-				set_viewport_and_scissor(command_buffer, swapchain.width, swapchain.height);
-
-				vkCmdBindIndexBuffer(command_buffer, index_buffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-
-				for (const auto& d : mesh_draws)
-				{
-					assert(d.material_index >= 0);
-					const Material& mat = materials[d.material_index];
-					if (mat.type != Material::STANDARD) continue;
-
-					assert(mat.normal_texture >= 0);
-
-					const Mesh& mesh = meshes[d.mesh_index];
-					struct {
-						glm::mat4 viewproj;
-						glm::mat4 model;
-						uint32_t n_lights;
-						glm::vec3 camera_pos;
-						float ambient = AMBIENT_INTENSITY;
-					} pc;
-
-					pc.viewproj = viewproj;
-					pc.model = d.transform;
-					pc.n_lights = (uint32_t)lights.lights.size();
-					pc.camera_pos = camera_pos;
-
-					DescriptorInfo descriptor_info[] = {
-						DescriptorInfo(vertex_buffer.buffer),
-						DescriptorInfo(anisotropic_sampler),
-						DescriptorInfo(linear_sampler),
-						DescriptorInfo(point_sampler),
-						DescriptorInfo(beckmann_lut.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-						DescriptorInfo(textures[mat.basecolor_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-						DescriptorInfo(textures[mat.normal_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-						DescriptorInfo(textures[mat.metallic_roughness_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-						DescriptorInfo(textures[mat.occlusion_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-						DescriptorInfo(lights.buffer.buffer),
-						DescriptorInfo(shadow_sampler),
-						DescriptorInfo(lights.lights[0].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
-						DescriptorInfo(lights.lights[1].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
-						DescriptorInfo(lights.lights[2].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
-						DescriptorInfo(lights.lights[3].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
-						DescriptorInfo(lights.lights[4].shadowmap.view, VK_IMAGE_LAYOUT_GENERAL),
-						DescriptorInfo(environment.irradiance.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-					};
-
-					draw_with_pipeline_and_program(command_buffer, mesh, forward_pbr_program, forward_pbr_pipeline, pc, descriptor_info);
-				}
-
-#if 0
-				for (const auto& d : mesh_draws)
-				{
-					assert(d.material_index >= 0);
-					const Material& mat = materials[d.material_index];
-					if (mat.type != Material::TEARLINE) continue;
-
-					assert(mat.normal_texture >= 0);
-
-					const Mesh& mesh = meshes[d.mesh_index];
-
-					struct {
-						glm::mat4 viewproj;
-						glm::mat4 model;
-						glm::vec3 camera_pos;
-						float ambient = AMBIENT_INTENSITY;
-						glm::vec2 pixel_size;
-					} pc;
-
-					pc.viewproj = viewproj;
-					pc.model = d.transform;
-					pc.camera_pos = camera_pos;
-					pc.pixel_size = glm::vec2(1.0f / swapchain.width, 1.0f / swapchain.height);
-
-					DescriptorInfo descriptor_info[] = {
-						DescriptorInfo(vertex_buffer.buffer),
-						DescriptorInfo(anisotropic_sampler),
-						DescriptorInfo(linear_sampler),
-						DescriptorInfo(textures[mat.normal_texture].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-						DescriptorInfo(linear_depth_texture.view, VK_IMAGE_LAYOUT_GENERAL),
-						DescriptorInfo(environment.reflection.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-					};
-
-					draw_with_pipeline_and_program(command_buffer, mesh, tearline_program, tearline_pipeline, pc, descriptor_info);
-				}
-#endif
-
-				vkCmdEndRendering(command_buffer);
-		}
-#endif
-
+		vkCmdWriteTimestamp(command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, query_pool, 2);
 
 		if (BLOOM_ENABLED)
 		{ // Do bloom
-			VkMemoryBarrier2 barrier = memory_barrier(VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-				VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT);
+			VkMemoryBarrier2 barrier = memory_barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+				VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_READ_BIT);
 
 			pipeline_barrier(command_buffer, { barrier }, {});
 
+#if USE_COMPUTE_POST_PROCESS == 0
 			VkRenderingAttachmentInfo attachment_info{
 				.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
 				.imageView = bloom_resources.glare_texture.view,
@@ -2198,6 +2217,8 @@ int main(int argc, char** argv)
 			vkCmdDraw(command_buffer, 3, 1, 0, 0);
 
 			vkCmdEndRendering(command_buffer);
+
+
 
 			auto do_blur = [&](VkCommandBuffer cmd, const Texture& src, const Texture& dst, glm::vec2 dir)
 				{
@@ -2261,7 +2282,7 @@ int main(int argc, char** argv)
 
 			for (uint32_t i = 0; i < N_BLOOM_PASSES; ++i) 
 			{
-				VkMemoryBarrier2 barrier = memory_barrier(VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+				VkMemoryBarrier2 barrier = memory_barrier(VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
 					VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
 
 				pipeline_barrier(command_buffer, { barrier }, {});
@@ -2282,7 +2303,7 @@ int main(int argc, char** argv)
 
 				VkRenderingAttachmentInfo attachment_info{
 					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-					.imageView = views[image_index],
+					.imageView = tmp_render_target.view,
 					.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
 					.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
 					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -2333,6 +2354,107 @@ int main(int argc, char** argv)
 
 				pipeline_barrier(command_buffer, { barrier }, {});
 			}
+#else
+			struct {
+				float bloom_threshold = BLOOM_THRESHOLD;
+				float exposure = EXPOSURE;
+			} pc;
+
+			DescriptorInfo descriptor_info[] = {
+				DescriptorInfo(linear_sampler),
+				DescriptorInfo(main_render_target.view, VK_IMAGE_LAYOUT_GENERAL),
+				DescriptorInfo(bloom_resources.glare_texture.view, VK_IMAGE_LAYOUT_GENERAL),
+			};
+
+			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, bloom_glare_detect_compute_pipeline);
+
+			glm::uvec3 dispatch_size = get_dispatch_size(glm::uvec3(bloom_resources.glare_texture.width, bloom_resources.glare_texture.height, 1), glm::uvec3(8, 8, 1));
+			dispatch(command_buffer, bloom_glare_detect_compute_program, dispatch_size, pc, descriptor_info);
+
+			Texture current = bloom_resources.glare_texture;
+			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, bloom_blur_compute_pipeline);
+
+			for (uint32_t i = 0; i < N_BLOOM_PASSES; ++i)
+			{
+				VkMemoryBarrier2 barrier = memory_barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
+					VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
+				
+				pipeline_barrier(command_buffer, { barrier }, {});
+
+				glm::uvec2 rt_size = glm::uvec2(bloom_resources.tmp_render_targets[i][0].width, bloom_resources.tmp_render_targets[i][0].height);
+				glm::vec2 pixel_size = 1.0f / glm::vec2(rt_size);
+				glm::uvec3 dispatch_size = get_dispatch_size(
+					glm::uvec3(rt_size.x, rt_size.y, 1),
+					glm::uvec3(8, 8, 1));
+				{ // Horizontal blur
+					struct {
+						glm::vec2 step;
+					} pc;
+
+					pc.step = pixel_size * BLOOM_WIDTH * glm::vec2(1.0f, 0.0f);
+
+					DescriptorInfo descriptor_info[] = {
+						DescriptorInfo(linear_sampler),
+						DescriptorInfo(current.view, VK_IMAGE_LAYOUT_GENERAL),
+						DescriptorInfo(bloom_resources.tmp_render_targets[i][0].view, VK_IMAGE_LAYOUT_GENERAL),
+					};
+
+					dispatch(command_buffer, bloom_blur_compute_program, dispatch_size, pc, descriptor_info);
+				}
+				pipeline_barrier(command_buffer, { barrier }, {});
+				{ // Vertical blur
+					struct {
+						glm::vec2 step;
+					} pc;
+
+					pc.step = pixel_size * BLOOM_WIDTH * glm::vec2(0.0f, 1.0f);
+
+					DescriptorInfo descriptor_info[] = {
+						DescriptorInfo(linear_sampler),
+						DescriptorInfo(bloom_resources.tmp_render_targets[i][0].view, VK_IMAGE_LAYOUT_GENERAL),
+						DescriptorInfo(bloom_resources.tmp_render_targets[i][1].view, VK_IMAGE_LAYOUT_GENERAL),
+					};
+
+					dispatch(command_buffer, bloom_blur_compute_program, dispatch_size, pc, descriptor_info);
+				}
+
+				current = bloom_resources.tmp_render_targets[i][1];
+			}
+
+			{ // Compose
+
+				vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, bloom_compose_compute_pipeline);
+
+				VkMemoryBarrier2 barrier = memory_barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+					VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+
+				pipeline_barrier(command_buffer, { barrier }, {});
+
+				struct {
+					float defocus = BLOOM_DEFOCUS;
+					float exposure = EXPOSURE;
+					float bloom_intensity = BLOOM_INTENSITY;
+				} pc;
+
+
+				glm::uvec3 dispatch_size = get_dispatch_size(glm::uvec3(swapchain.width, swapchain.height, 1), glm::uvec3(8, 8, 1));
+
+				DescriptorInfo descriptor_info[] = {
+					DescriptorInfo(linear_sampler),
+					DescriptorInfo(main_render_target.view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(tmp_render_target.view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(bloom_resources.tmp_render_targets[0][1].view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(bloom_resources.tmp_render_targets[1][1].view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(bloom_resources.tmp_render_targets[2][1].view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(bloom_resources.tmp_render_targets[3][1].view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(bloom_resources.tmp_render_targets[4][1].view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(bloom_resources.tmp_render_targets[5][1].view, VK_IMAGE_LAYOUT_GENERAL),
+				};
+
+				dispatch(command_buffer, bloom_compose_compute_program, dispatch_size, pc, descriptor_info);
+			}
+#endif
+
 		}
 		else
 		{ // Do tonemap
@@ -2396,8 +2518,12 @@ int main(int argc, char** argv)
 			pipeline_barrier(command_buffer, { barrier }, {});
 		}
 
+		vkCmdWriteTimestamp(command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, query_pool, 3);
+
 		if (DOF_ENABLED)
 		{ // Do depth of field
+
+#if USE_COMPUTE_POST_PROCESS == 0
 			VkMemoryBarrier2 barrier = memory_barrier(VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
 				VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
 			pipeline_barrier(command_buffer, { barrier }, {});
@@ -2450,7 +2576,7 @@ int main(int argc, char** argv)
 				begin_rendering(command_buffer, swapchain.width, swapchain.height, {
 					{
 						.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-						.imageView = i == 0 ? dof_resources.tmp_render_target.view : views[image_index],
+						.imageView = i == 0 ? main_render_target.view : tmp_render_target.view,
 						.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
 						.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
 						.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -2472,7 +2598,7 @@ int main(int argc, char** argv)
 
 				vkCmdPushConstants(command_buffer, dof_blur_program.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
 
-				VkImageView in_view = i == 0 ? views[image_index] : dof_resources.tmp_render_target.view;
+				VkImageView in_view = i == 0 ? tmp_render_target.view : main_render_target.view;
 				DescriptorInfo descriptor_info[] = {
 					DescriptorInfo(linear_sampler),
 					DescriptorInfo(point_sampler),
@@ -2487,10 +2613,66 @@ int main(int argc, char** argv)
 
 				vkCmdEndRendering(command_buffer);
 			}
+
+#else
+			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, dof_coc_compute_pipeline);
+			VkMemoryBarrier2 barrier = memory_barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+			pipeline_barrier(command_buffer, { barrier }, {});
+
+			{
+				struct {
+					float focus_distance = DOF_FOCUS_DISTANCE;
+					float focus_range = DOF_FOCUS_RANGE;
+					glm::vec2 focus_falloff = DOF_FOCUS_FALLOFF;
+				} pc;
+
+				DescriptorInfo descriptor_info[] = {
+					DescriptorInfo(point_sampler),
+					DescriptorInfo(linear_depth_texture.view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(tmp_render_target.view, VK_IMAGE_LAYOUT_GENERAL),
+				};
+
+				glm::uvec3 dispatch_size = get_dispatch_size(glm::uvec3(swapchain.width, swapchain.height, 1), glm::uvec3(8, 8, 1));
+				dispatch(command_buffer, dof_coc_compute_program, dispatch_size, pc, descriptor_info);
+			}
+
+			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, dof_blur_compute_pipeline);
+			for (uint32_t pass = 0; pass < 2; ++pass)
+			{ // Blur horizontal + vertical
+				pipeline_barrier(command_buffer, { barrier }, {});
+
+				struct {
+					glm::vec2 step;
+					glm::uvec2 dispatch_size;
+				} pc;
+
+				glm::uvec3 dispatch_size = get_dispatch_size(glm::uvec3(swapchain.width, swapchain.height, 1), glm::uvec3(8, 8, 1));
+
+				glm::vec2 dir = pass == 0 ? glm::vec2(1.0f, 0.0f) : glm::vec2(0.0f, 1.0f);
+				glm::vec2 pixel_size = 1.0f / glm::vec2(swapchain.width, swapchain.height);
+				pc.step = pixel_size * DOF_BLUR_WIDTH * dir;
+				pc.dispatch_size = glm::uvec2(dispatch_size);
+
+				VkImageView in_view = pass == 0 ? tmp_render_target.view : main_render_target.view;
+				VkImageView out_view = pass == 0 ? main_render_target.view : tmp_render_target.view;
+				DescriptorInfo descriptor_info[] = {
+					DescriptorInfo(linear_sampler),
+					DescriptorInfo(in_view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(out_view, VK_IMAGE_LAYOUT_GENERAL),
+				};
+
+
+				dispatch(command_buffer, dof_blur_compute_program, dispatch_size, pc, descriptor_info);
+			}
+#endif
 		}
+
+		vkCmdWriteTimestamp(command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, query_pool, 4);
 
 		if (FILM_GRAIN_ENABLED)
 		{ // Do film grain
+#if USE_COMPUTE_POST_PROCESS == 0
 			VkMemoryBarrier2 barrier = memory_barrier(VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
 				VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
 			pipeline_barrier(command_buffer, { barrier }, {});
@@ -2500,7 +2682,7 @@ int main(int argc, char** argv)
 			begin_rendering(command_buffer, swapchain.width, swapchain.height, {
 				{
 					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-					.imageView = views[image_index],
+					.imageView = main_render_target.view,
 					.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
 					.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
 					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -2527,7 +2709,7 @@ int main(int argc, char** argv)
 				DescriptorInfo(linear_sampler),
 				DescriptorInfo(linear_sampler_wrap),
 				DescriptorInfo(noise_texture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
-				DescriptorInfo(views[image_index], VK_IMAGE_LAYOUT_GENERAL),
+				DescriptorInfo(tmp_render_target.view, VK_IMAGE_LAYOUT_GENERAL),
 			};
 
 			vkCmdPushDescriptorSetWithTemplateKHR(command_buffer, film_grain_program.descriptor_update_template, film_grain_program.pipeline_layout, 0, descriptor_info);
@@ -2535,16 +2717,78 @@ int main(int argc, char** argv)
 			vkCmdDraw(command_buffer, 3, 1, 0, 0);
 
 			vkCmdEndRendering(command_buffer);
+#else
+			VkMemoryBarrier2 barrier = memory_barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+			pipeline_barrier(command_buffer, { barrier }, {});
+
+			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, film_grain_compute_pipeline);
+
+			struct {
+				float noise_intensity;
+				float exposure;
+				glm::vec2 pixel_size;
+				float time;
+			} pc;
+
+			pc.noise_intensity = FILM_GRAIN_NOISE_INTENSITY;
+			pc.exposure = EXPOSURE;
+			pc.pixel_size = 1.0f / glm::vec2(swapchain.width, swapchain.height);
+			pc.time = 2.5f * (SDL_GetTicks64() / 1000.0f);
+
+
+			DescriptorInfo descriptor_info[] = {
+				DescriptorInfo(linear_sampler),
+				DescriptorInfo(linear_sampler_wrap),
+				DescriptorInfo(noise_texture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+				DescriptorInfo(tmp_render_target.view, VK_IMAGE_LAYOUT_GENERAL),
+				DescriptorInfo(main_render_target.view, VK_IMAGE_LAYOUT_GENERAL),
+			};
+
+			glm::uvec3 dispatch_size = get_dispatch_size(glm::uvec3(swapchain.width, swapchain.height, 1), glm::uvec3(8, 8, 1));
+
+			dispatch(command_buffer, film_grain_compute_program, dispatch_size, pc, descriptor_info);
+#endif
+		}
+
+		vkCmdWriteTimestamp(command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, query_pool, 5);
+
+		{ // Blit
+			VkMemoryBarrier2 barrier = memory_barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT);
+			pipeline_barrier(command_buffer, { barrier }, {});
+
+			vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, film_grain_pipeline);
+
+			VkImageBlit region{
+				.srcSubresource = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.mipLevel = 0,
+					.baseArrayLayer = 0,
+					.layerCount = 1,
+				},
+				.srcOffsets = {{0, 0, 0}, {(int32_t)swapchain.width, (int32_t)swapchain.height, 1}},
+				.dstSubresource = {
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.mipLevel = 0,
+					.baseArrayLayer = 0,
+					.layerCount = 1,
+				},
+				.dstOffsets = {{0, 0, 0}, {(int32_t)swapchain.width, (int32_t)swapchain.height, 1}},
+			};
+
+			vkCmdBlitImage(command_buffer, main_render_target.image, VK_IMAGE_LAYOUT_GENERAL, swapchain.images[image_index], VK_IMAGE_LAYOUT_GENERAL, 1, &region, VK_FILTER_LINEAR);
 		}
 
 		{ // Transition to present src
 			VkImageMemoryBarrier2 barrier = image_barrier(swapchain.images[image_index], 
-				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL,
 				VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_ACCESS_2_MEMORY_READ_BIT, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
 			pipeline_barrier(command_buffer, {}, { barrier });
 		}
 
+		vkCmdWriteTimestamp(command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, query_pool, 6);
 
 		VK_CHECK(vkEndCommandBuffer(command_buffer));
 
@@ -2577,12 +2821,32 @@ int main(int argc, char** argv)
 
 		VK_CHECK(vkWaitForFences(device, 1, &frame_fence, VK_TRUE, UINT64_MAX));
 		VK_CHECK(vkResetFences(device, 1, &frame_fence));
+
+		uint64_t timestamps[7] = {};
+		VK_CHECK(vkGetQueryPoolResults(device, query_pool, 0, 7, sizeof(timestamps), timestamps, sizeof(double), VK_QUERY_RESULT_64_BIT));
+		
+		double delta_in_ms = (timestamps[6] - timestamps[0]) * device_properties.limits.timestampPeriod * 1e-6;
+		double post_process = (timestamps[6] - timestamps[1]) * device_properties.limits.timestampPeriod * 1e-6;
+		double sss_ms = (timestamps[2] - timestamps[1]) * device_properties.limits.timestampPeriod * 1e-6;
+		double bloom_ms = (timestamps[3] - timestamps[2]) * device_properties.limits.timestampPeriod * 1e-6;
+		double dof_ms = (timestamps[4] - timestamps[3]) * device_properties.limits.timestampPeriod * 1e-6;
+		double film_grain_ms = (timestamps[5] - timestamps[4]) * device_properties.limits.timestampPeriod * 1e-6;
+		smoothed_frametime_ms = glm::mix(smoothed_frametime_ms, delta_in_ms, 0.05f);
+		post_process_ms = glm::mix(post_process_ms, post_process, 0.05f);
+
+		{
+			char title[256];
+			sprintf(title, "gpu: %f ms, post process: %f ms, sss: %f ms, bloom: %f ms, dof: %f ms, film grain: %f ms", 
+				smoothed_frametime_ms, post_process_ms, sss_ms, bloom_ms, dof_ms, film_grain_ms);
+			SDL_SetWindowTitle(window, title);
+		}
 	}
 
 	VK_CHECK(vkDeviceWaitIdle(device));
 
 	SDL_DestroyWindow(window);
 
+	vkDestroyQueryPool(device, query_pool, nullptr);
 	vkDestroySampler(device, anisotropic_sampler, nullptr);
 	vkDestroySampler(device, linear_sampler, nullptr);
 	vkDestroySampler(device, linear_sampler_wrap, nullptr);
@@ -2622,26 +2886,40 @@ int main(int argc, char** argv)
 	destroy_program(device, tonemap_program);
 	destroy_program(device, shadowmap_program);
 	destroy_program(device, sss_program);
+	destroy_program(device, sss_compute_program);
 	destroy_program(device, env_program);
 	destroy_program(device, bloom_glare_detect_program);
+	destroy_program(device, bloom_glare_detect_compute_program);
 	destroy_program(device, bloom_blur_program);
+	destroy_program(device, bloom_blur_compute_program);
 	destroy_program(device, bloom_combine_program);
+	destroy_program(device, bloom_compose_compute_program);
 	destroy_program(device, dof_coc_program);
 	destroy_program(device, dof_blur_program);
+	destroy_program(device, dof_coc_compute_program);
+	destroy_program(device, dof_blur_compute_program);
 	destroy_program(device, film_grain_program);
+	destroy_program(device, film_grain_compute_program);
 	vkDestroyPipeline(device, pipeline, nullptr);
 	vkDestroyPipeline(device, forward_gltf_pipeline, nullptr);
 	vkDestroyPipeline(device, forward_eyes_gltf_pipeline, nullptr);
 	vkDestroyPipeline(device, shadowmap_pipeline, nullptr);
 	vkDestroyPipeline(device, tonemap_pipeline, nullptr);
-	vkDestroyPipeline(device, sss_pipeline , nullptr);
+	vkDestroyPipeline(device, sss_pipeline, nullptr);
+	vkDestroyPipeline(device, sss_compute_pipline, nullptr);
 	vkDestroyPipeline(device, env_pipeline, nullptr);
 	vkDestroyPipeline(device, bloom_glare_detect_pipeline, nullptr);
+	vkDestroyPipeline(device, bloom_glare_detect_compute_pipeline, nullptr);
 	vkDestroyPipeline(device, bloom_blur_pipeline, nullptr);
+	vkDestroyPipeline(device, bloom_blur_compute_pipeline, nullptr);
 	vkDestroyPipeline(device, bloom_combine_pipeline, nullptr);
+	vkDestroyPipeline(device, bloom_compose_compute_pipeline, nullptr);
 	vkDestroyPipeline(device, dof_coc_pipeline, nullptr);
+	vkDestroyPipeline(device, dof_coc_compute_pipeline, nullptr);
 	vkDestroyPipeline(device, dof_blur_pipeline, nullptr);
+	vkDestroyPipeline(device, dof_blur_compute_pipeline, nullptr);
 	vkDestroyPipeline(device, film_grain_pipeline, nullptr);
+	vkDestroyPipeline(device, film_grain_compute_pipeline, nullptr);
 	vkDestroyPipeline(device, tearline_pipeline, nullptr);
 	vkDestroyPipeline(device, forward_pbr_pipeline, nullptr);
 	vkDestroyCommandPool(device, command_pool, nullptr);

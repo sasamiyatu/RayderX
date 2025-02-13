@@ -299,7 +299,7 @@ FSOutput fs_main(FSInput input)
 
     NoV = abs(dot(normal, view)) + 1e-5f;
 
-    float3 f0 = 0.04;
+    float3 f0 = 0.06;
     float3 R = reflect(-view, normal);
     float3 env_r = sample_cubemap(environment_texture, R).rgb * specularGGXReflectanceApprox(f0, roughness, NoV);
 

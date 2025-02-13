@@ -40,7 +40,7 @@ VSOutput vs_main(VSInput input)
     float4 position = mul(push_constants.viewproj, float4(v.position * 10.0f, 1.0f));
 
     output.position = position;
-    output.world_position = v.position;
+    output.world_position = v.position.xyz;
 
     return output;
 }
