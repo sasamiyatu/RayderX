@@ -1,3 +1,5 @@
+#include "color.hlsli"
+
 [[vk::binding(0)]] SamplerState linear_sampler;
 [[vk::binding(1)]] SamplerState linear_sampler_wrap;
 [[vk::binding(2)]] Texture3D noise_texture;
@@ -70,6 +72,7 @@ FSOutput film_grain(FSInput input)
 
     float3 color = in_render_target.Sample(linear_sampler, input.uv).rgb;
     color = add_noise(color, input.uv);
+    color = linear_to_srgb(color);
     output.color = float4(color, 1.0);
 
     return output;

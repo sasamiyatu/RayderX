@@ -1482,7 +1482,7 @@ int main(int argc, char** argv)
 	FAIL_ON_ERROR(load_shader(film_grain_vertex_shader, compiler, device, "film_grain.hlsl", "vs_main", VK_SHADER_STAGE_VERTEX_BIT));
 	FAIL_ON_ERROR(load_shader(film_grain_fragment_shader, compiler, device, "film_grain.hlsl", "film_grain", VK_SHADER_STAGE_FRAGMENT_BIT));
 	Program film_grain_program = create_program(device, { film_grain_vertex_shader, film_grain_fragment_shader }, true);
-	VkPipeline film_grain_pipeline = create_pipeline(device, { film_grain_vertex_shader, film_grain_fragment_shader }, film_grain_program.pipeline_layout, { RENDER_TARGET_FORMAT });
+	VkPipeline film_grain_pipeline = create_pipeline(device, { film_grain_vertex_shader, film_grain_fragment_shader }, film_grain_program.pipeline_layout, { swapchain.format });
 
 	Program film_grain_compute_program{};
 	load_shader_and_create_compute_program(film_grain_compute_program, device, compiler, "film_grain_comp.hlsl", "cs_main");
@@ -2682,7 +2682,7 @@ int main(int argc, char** argv)
 			begin_rendering(command_buffer, swapchain.width, swapchain.height, {
 				{
 					.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-					.imageView = main_render_target.view,
+					.imageView = views[image_index],
 					.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
 					.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
 					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
