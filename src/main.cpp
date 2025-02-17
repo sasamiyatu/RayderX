@@ -1430,10 +1430,19 @@ int main(int argc, char** argv)
 	glm::mat4 view = main_camera.compute_view();
 	glm::mat4 proj = main_camera.projection;
 	glm::mat4 viewproj = proj * view;
-	glm::vec3 camera_pos = glm::inverse(view)[3];
+	glm::mat4 camera_to_world = glm::inverse(view);
+	glm::vec3 camera_pos = camera_to_world[3];
 
 	double smoothed_frametime_ms = 0.0f;
 	double post_process_ms = 0.0f;
+	
+	const float movement_speed = 1.0f;
+	const float mouse_sensitivity = 0.001f;
+	
+	const uint64_t pfreq = SDL_GetPerformanceFrequency();
+	const double inv_pfreq = 1.0 / (double)pfreq;
+	uint64_t start_counter = SDL_GetPerformanceCounter();
+	uint64_t prev_counter = start_counter;
 
     bool running = true;
 	while (running)
@@ -1441,14 +1450,56 @@ int main(int argc, char** argv)
 		uint32_t image_index;
 		VK_CHECK(vkAcquireNextImageKHR(device, swapchain.swapchain, UINT64_MAX, acquire_semaphore, VK_NULL_HANDLE, &image_index));
 
+		glm::vec2 mouse_delta = glm::vec2(0.0f);
 		SDL_Event event;
 		while (SDL_PollEvent(&event))
 		{
-			if (event.type == SDL_QUIT)
+			switch (event.type)
 			{
+			case SDL_QUIT:
 				running = false;
+				break;
+			case SDL_MOUSEMOTION:
+				mouse_delta = glm::vec2(event.motion.xrel, event.motion.yrel) * mouse_sensitivity;
+				break;
+			default:break;
 			}
 		}
+
+		uint32_t mouse_state = SDL_GetMouseState(nullptr, nullptr);
+		bool left_click_down = mouse_state & SDL_BUTTON_LMASK;
+		mouse_delta *= (float)left_click_down;
+		SDL_SetRelativeMouseMode(left_click_down ? SDL_TRUE : SDL_FALSE);
+
+		int num_keys = 0;
+		const uint8_t* keyboard_state = SDL_GetKeyboardState(&num_keys);
+
+		const uint64_t counter = SDL_GetPerformanceCounter();
+		const uint64_t counter_delta = counter - prev_counter;
+		const double delta_time = (double)counter_delta * inv_pfreq;
+		const float dt = (float)delta_time;
+		prev_counter = counter;
+
+		camera_to_world[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+		camera_to_world = glm::rotate(glm::mat4(1.0f), -mouse_delta.x, glm::vec3(0.0f, 1.0f, 0.0f)) * camera_to_world;
+		camera_to_world = glm::rotate(camera_to_world, mouse_delta.y, glm::vec3(1.0f, 0.0f, 0.0f));
+
+		glm::vec3 dirs = glm::vec3(0.0f);
+		if (keyboard_state[SDL_SCANCODE_W]) dirs.z -= 1.0f;
+		if (keyboard_state[SDL_SCANCODE_S]) dirs.z += 1.0f;
+		if (keyboard_state[SDL_SCANCODE_A]) dirs.x -= 1.0f;
+		if (keyboard_state[SDL_SCANCODE_D]) dirs.x += 1.0f;
+		if (keyboard_state[SDL_SCANCODE_LCTRL]) dirs.y -= 1.0f;
+		if (keyboard_state[SDL_SCANCODE_SPACE]) dirs.y += 1.0f;
+
+		if (glm::length(dirs) != 0.0f) dirs = glm::normalize(dirs);
+		camera_pos += glm::vec3(camera_to_world[0]) * dirs.x * movement_speed * dt;
+		camera_pos += glm::vec3(camera_to_world[1]) * dirs.y * movement_speed * dt;
+		camera_pos += glm::vec3(camera_to_world[2]) * dirs.z * movement_speed * dt;
+
+		camera_to_world[3] = glm::vec4(camera_pos, 1.0f);
+		view = glm::inverse(camera_to_world);
+		viewproj = proj * view;
 
 		VK_CHECK(vkResetCommandPool(device, command_pool, 0));
 		VkCommandBufferBeginInfo begin_info{
