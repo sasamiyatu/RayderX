@@ -1490,7 +1490,7 @@ int main(int argc, char** argv)
 
 	Texture depth_texture_msaa = create_texture(device, allocator, swapchain.width, swapchain.height, 1, DEPTH_FORMAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 1, MSAA);
 	Texture depth_texture = create_texture(device, allocator, swapchain.width, swapchain.height, 1, DEPTH_FORMAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 1);
-	Texture linear_depth_texture_msaa = create_texture(device, allocator, swapchain.width, swapchain.height, 1, LINEAR_DEPTH_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 1, MSAA);
+	Texture linear_depth_texture_msaa = create_texture(device, allocator, swapchain.width, swapchain.height, 1, LINEAR_DEPTH_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 1, MSAA);
 	Texture linear_depth_texture = create_texture(device, allocator, swapchain.width, swapchain.height, 1, LINEAR_DEPTH_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
 	Texture main_render_target = create_texture(device, allocator, swapchain.width, swapchain.height, 1, RENDER_TARGET_FORMAT,
 		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
@@ -1797,7 +1797,7 @@ int main(int argc, char** argv)
 					.resolveImageLayout = VK_IMAGE_LAYOUT_GENERAL,
 					.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
 					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-					.clearValue = {.color = {0.0f, 0.0f, 0.0f, 0.0f} }
+					.clearValue = {.color = {100.0f, 0.0f, 0.0f, 0.0f} }
 				}},
 				{
 					{
@@ -2629,7 +2629,7 @@ int main(int argc, char** argv)
 
 				DescriptorInfo descriptor_info[] = {
 					DescriptorInfo(point_sampler),
-					DescriptorInfo(linear_depth_texture.view, VK_IMAGE_LAYOUT_GENERAL),
+					DescriptorInfo(linear_depth_texture_msaa.view, VK_IMAGE_LAYOUT_GENERAL),
 					DescriptorInfo(tmp_render_target.view, VK_IMAGE_LAYOUT_GENERAL),
 				};
 
