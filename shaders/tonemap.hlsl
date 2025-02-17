@@ -19,7 +19,7 @@ struct PushConstants
 PushConstants push_constants;
 
 [numthreads(8, 8, 1)]
-void tonemap( uint3 thread_id : SV_DispatchThreadID )
+void cs_main( uint3 thread_id : SV_DispatchThreadID )
 {
     int w, h;
     in_render_target.GetDimensions(w, h);

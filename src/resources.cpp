@@ -584,12 +584,6 @@ bool load_texture(Texture& texture, const char* path, VkDevice device, VmaAlloca
 
 	DDS_HEADER_DXT10* header_dx10 = has_dx10 ?  (DDS_HEADER_DXT10*)(header + 1) : nullptr;
 
-	if (has_dx10)
-	{
-		printf("DX10 extension not supported\n");
-		//return false;
-	}
-
 	bool complex = header->dwCaps & DDSCAPS_COMPLEX;
 	bool is_cubemap = has_dx10 ? (header_dx10->miscFlag & DDS_RESOURCE_MISC_TEXTURECUBE): (header->dwCaps& DDSCAPS_COMPLEX) && (header->dwCaps2 & DDSCAPS2_CUBEMAP);
 	if (is_cubemap)

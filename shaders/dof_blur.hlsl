@@ -1,5 +1,3 @@
-#include "thread_group_tiling.hlsl"
-
 [[vk::binding(0)]] SamplerState linear_sampler;
 [[vk::binding(1)]] Texture2D in_render_target;
 [[vk::binding(2)]] RWTexture2D<float4> out_render_target;
@@ -19,7 +17,6 @@ void cs_main(uint3 thread_id : SV_DispatchThreadID, uint3 group_thread_id : SV_G
     float w, h;
     float2 uv;
     float2 pixel_size;
-    //uint2 tid = ThreadGroupTilingX(push_constants.dispatch_size, uint2(8, 8), 64, group_thread_id.xy, group_id.xy);
     uint2 tid = thread_id.xy;
     {
         out_render_target.GetDimensions(w, h);

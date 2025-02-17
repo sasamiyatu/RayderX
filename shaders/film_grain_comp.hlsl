@@ -1,4 +1,3 @@
-#include "thread_group_tiling.hlsl"
 #include "color.hlsli"
 
 [[vk::binding(0)]] SamplerState linear_sampler;
@@ -39,7 +38,6 @@ void cs_main(uint3 thread_id : SV_DispatchThreadID, uint3 group_thread_id : SV_G
 {
     float w, h;
     float2 uv;
-    //uint2 tid = ThreadGroupTilingX(push_constants.dispatch_size, uint2(8, 8), 64, group_thread_id.xy, group_id.xy);
     uint2 tid = thread_id.xy;
     {
         out_render_target.GetDimensions(w, h);
